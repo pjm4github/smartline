@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartline"
+dynamic = ["version"]
+description = "Smart rubber-band line drawing for QGraphicsScene: orthogonal, obstacle-hugging, auto-avoiding, bus-following and cubic routers for PyQt/PySide."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Patrick Moran (pjm4github)" },
+    { name = "Claude (Anthropic)" },
+]
+keywords = ["qt", "pyqt", "pyside", "qgraphicsscene", "diagram", "schematic",
+            "connector", "wire", "routing", "orthogonal", "bezier"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: User Interfaces",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Typing :: Typed",
+]
+# No hard Qt dependency on purpose: smartline uses whichever binding the host
+# application already imports (PyQt6, PySide6, PyQt5 or PySide2).  The routing
+# core needs no Qt at all.
+dependencies = []
+
+[project.optional-dependencies]
+pyqt6 = ["PyQt6>=6.2"]
+pyside6 = ["PySide6>=6.2"]
+pyqt5 = ["PyQt5>=5.15"]
+pyside2 = ["PySide2>=5.15"]
+test = ["pytest>=7"]
+gallery = ["matplotlib"]
+
+[project.urls]
+Homepage = "https://github.com/pjm4github/smartline"
+Issues = "https://github.com/pjm4github/smartline/issues"
+
+# Applications can ship routing modes that smartline discovers automatically:
+#
+#   [project.entry-points."smartline.routers"]
+#   cubic = "pictosync.routing:PictoCubicRouter"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+smartline = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "smartline.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[tool.ruff]
+line-length = 110
+src = ["src"]
