@@ -97,6 +97,35 @@ where an item keeps its route, `snap_provider` re-snaps dragged ends to ports, a
 `edit.move_segment`, `move_anchor`, `move_control`, `insert_anchor`, `delete_anchor`,
 `convert_segment`, `normalize`, `handles`, `nearest_segment` - all `Route -> Route`.
 
+## Re-routing lines around a moved shape
+
+```python
+changes = tool.reroute_around(shape_item)      # or a QRectF; -> [(item, old_route, new_route), ...]
+tool.reroute_colliding()                       # the same, for every shape in the scene
+```
+
+Call it when a shape has been dropped onto existing lines (the bench does it on drop and
+on `R`). For each line that passes through the shape:
+
+* only the offending part is replaced - the span is widened to the nearest vertices outside
+  the shape's clearance hull and re-routed between them, so the rest of the line and any
+  manual edits survive (curved legs are redone whole, because their vertices come from
+  smoothing rather than from the user);
+* that part is routed with **the method it was drawn with**. Every leg records its mode,
+  posture and flip in `Route.legs()`, so a line drawn half `straight`, half `ortho` is
+  repaired leg by leg. Non-avoiding modes are used through `Router.avoiding()` - the same
+  style plus a walkaround pass - so `ortho` stays orthogonal, `cubic` stays a curve,
+  `straight` gets a minimal detour, and `hug` / `avoid` / `bus` are used as they are;
+* the batch is returned and emitted as `routesRerouted` for a single undo step. If a line
+  cannot be cleared (an end lies inside the shape) the best attempt is returned with
+  `route.meta["unresolved"] = True`.
+
+Hooks mirror the editor: `tool.route_of(item)` and `tool.apply_route(item, route)`.
+Headless: `smartline.reroute.repair(route, rect, ctx, lookup)`, `hits`, `hit_segments`.
+
+It deliberately does **not** move line ends that are attached to the shape - keeping a wire
+glued to a port is connection tracking, which belongs to the application's model.
+
 ## The framework: one contract, three extension points
 
 ```
@@ -227,7 +256,8 @@ src/smartline/
   registry.py   register / create / default_routers / plugins        (pure Python)
   qt_compat.py  binding shim
   edit.py       Route -> Route editing operations, handles, hit-testing   (pure Python)
-  tool.py       SmartLineTool, route_to_path, keymap
+  reroute.py    repair a Route around a shape using each leg's original method    (pure Python)
+  tool.py       SmartLineTool (draw, reroute_around), route_to_path, keymap
   editor.py     RouteEditor: handles overlay, drag / insert / delete / convert
 tests/          core + framework tests (no Qt) and tool tests (real Qt, or a stub without it)
 app.py (PyQt6 test bench)   examples/demo.py   tools/gallery.py   .github/workflows/ci.yml

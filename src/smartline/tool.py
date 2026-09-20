@@ -37,6 +37,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Union
 
 from . import geometry as g
 from .qt_compat import Qt, QtCore, QtGui, QtWidgets, Signal, enum
+from . import registry, reroute as _reroute
 from .registry import default_routers
 from .route import Route, concat
 from .routers import RouteContext, Router
@@ -150,6 +151,7 @@ class SmartLineTool(QtCore.QObject):
     modeChanged = Signal(str)          # router.name
     postureChanged = Signal(bool)
     cancelled = Signal()
+    routesRerouted = Signal(object)    # list[(item, old Route, new Route)] - one undoable batch
 
     def __init__(self, scene, modes: Optional[Iterable[Union[str, Router]]] = None,
                  parent=None):
@@ -186,6 +188,10 @@ class SmartLineTool(QtCore.QObject):
         self.obstacle_provider: Optional[Callable] = None
         #: ``f(QGraphicsItem) -> bool`` - refine the default obstacle scan
         self.obstacle_filter: Optional[Callable] = None
+        #: ``f(item) -> Route | None`` - where a connector item keeps its route
+        self.route_of: Callable = lambda item: getattr(item, "_smartline_route", None)
+        #: ``f(item, Route)`` - push a changed route back into a connector item
+        self.apply_route: Optional[Callable] = None
         #: ``f(Route) -> QGraphicsItem`` - build your own connector item
         self.item_factory: Optional[Callable] = None
 
@@ -328,11 +334,85 @@ class SmartLineTool(QtCore.QObject):
         for it in self.scene.items():
             if it in self._own_items or not it.isVisible():
                 continue
-            r = getattr(it, "_smartline_route", None)
+            r = self.route_of(it)
             pts = r.flatten() if r is not None else self._item_polyline(it)
             if pts:
                 nets.append(list(pts))
         return nets
+
+    # ------------------------------------------------------------ re-routing
+    def wires(self) -> List:
+        """``[(item, Route), ...]`` for every connector in the scene that carries a route."""
+        out = []
+        for it in self.scene.items():
+            if it in self._own_items:
+                continue
+            r = self.route_of(it)
+            if r is not None:
+                out.append((it, r))
+        return out
+
+    def reroute_around(self, shape, wires: Optional[Sequence] = None) -> List:
+        """Repair every line that *shape* now overlaps.
+
+        *shape* is a QGraphicsItem (its ``sceneBoundingRect()`` is used) or a
+        QRectF in scene coordinates.  Only the part of each line that runs
+        through the shape is replaced, using the routing method that part was
+        drawn with (``ortho`` stays orthogonal, ``cubic`` stays a curve, ...),
+        and going around the shape at the tool's current ``clearance``.
+
+        Returns - and emits as ``routesRerouted`` - a list of
+        ``(item, old_route, new_route)``, ready for an undo command.  A new route
+        whose ``meta["unresolved"]`` is set could not be cleared (typically a
+        line end lies inside the shape).
+        """
+        r = shape.sceneBoundingRect() if hasattr(shape, "sceneBoundingRect") else shape
+        rect = (r.left(), r.top(), r.right(), r.bottom())
+        self.refresh_obstacles()
+        obstacles = list(self._obstacles)
+        if rect not in obstacles:                 # a shape the default scan filters out still counts
+            obstacles.append(rect)
+        pairs = list(wires) if wires is not None else self.wires()
+        changes = []
+        for item, route in pairs:
+            if not _reroute.hits(route, rect):
+                continue
+            guides = [g.simplify(o.flatten()) for it, o in pairs if it is not item]
+            ctx = RouteContext(obstacles=obstacles, clearance=self.clearance,
+                               bend_penalty=self.bend_penalty, guides=guides,
+                               bus_pitch=self.bus_pitch, bus_capture=self.bus_capture)
+            new = _reroute.repair(route, rect, ctx, lookup=self.router_named)
+            if new is not None and new.to_svg(4) != route.to_svg(4):
+                self.set_item_route(item, new)
+                changes.append((item, route, new))
+        if changes:
+            self.routesRerouted.emit(changes)
+        return changes
+
+    def reroute_colliding(self) -> List:
+        """``reroute_around`` for every obstacle in the scene - a global clean-up."""
+        changes = []
+        for qrect in self.collect_obstacles():
+            changes.extend(self.reroute_around(qrect))
+        return changes
+
+    def router_named(self, name: Optional[str]) -> Optional[Router]:
+        """This tool's router for a mode name, else the registry's, else None."""
+        for r in self.routers:
+            if r.name == name:
+                return r
+        try:
+            return registry.create(name) if name else None
+        except KeyError:
+            return None
+
+    def set_item_route(self, item, route: Route) -> None:
+        """Write *route* into a connector item (honours ``apply_route``)."""
+        if self.apply_route is not None:
+            self.apply_route(item, route)
+            return
+        item.setPath(item.mapFromScene(route_to_path(route, self.corner_radius)))
+        item._smartline_route = route
 
     def refresh_obstacles(self) -> None:
         self._obstacles = [(r.left(), r.top(), r.right(), r.bottom())
@@ -430,6 +510,8 @@ class SmartLineTool(QtCore.QObject):
             elif self._latch is None:
                 self._latch = "HV" if dx >= dy else "VH"
             self._live_route = Route.coerce(self.router.shape(a, c, self._context()))
+            self._live_route.meta.update(router=self.router.name, flip=self._flip,
+                                         posture=self._latch)
             self._live = self._live_route.flatten()
         self._repaint()
 

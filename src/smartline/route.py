@@ -74,7 +74,20 @@ class Route:
         segs = list(self.segs)
         if g.dist(self.end, other.start) > 1e-6:
             segs.append(Seg("L", (other.start,)))
-        return Route(self.start, segs + list(other.segs), {**self.meta, **other.meta})
+        meta = {**self.meta, **other.meta, "legs": self.legs() + other.legs()}
+        return Route(self.start, segs + list(other.segs), meta)
+
+    def legs(self) -> List[Dict[str, Any]]:
+        """Provenance of each drawn leg: ``{"router", "flip", "posture", "end"}``.
+
+        A connector can be drawn in several legs with different modes; this is
+        what lets :mod:`smartline.reroute` repair each part with the routing
+        method it was drawn with.  ``end`` is the point where the leg stops.
+        """
+        if "legs" in self.meta:
+            return [dict(l) for l in self.meta["legs"]]
+        return [{"router": self.meta.get("router"), "flip": bool(self.meta.get("flip", False)),
+                 "posture": self.meta.get("posture"), "end": self.end}]
 
     # ------------------------------------------------------------------ views
     @property

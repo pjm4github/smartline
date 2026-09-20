@@ -178,6 +178,15 @@ class RouteEditor(QtCore.QObject):
         if item is not None:
             self.editingStopped.emit(item)
 
+    def refresh(self) -> None:
+        """Re-read the edited item's route after something else changed it
+        (a re-route, an undo ...), so the handles follow."""
+        if self._item is not None:
+            r = self.route_of(self._item)
+            if r is not None:
+                self._route, self._drag = r, None
+                self._refresh()
+
     def set_route(self, route: Route, record: bool = True) -> None:
         """Replace the edited item's route programmatically (one undoable step)."""
         if self._item is None:

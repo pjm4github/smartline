@@ -161,3 +161,27 @@ def test_modes_argument_selects_and_orders_the_ring():
     scene = QtWidgets.QGraphicsScene()
     tool = SmartLineTool(scene, modes=["bus", "ortho"])
     assert [r.name for r in tool.routers] == ["bus", "ortho"]
+
+
+def test_reroute_around_a_moved_shape_keeps_each_lines_method():
+    scene, tool, done = make()                                   # box at (100,100)-(200,200)
+    batches = []
+    tool.routesRerouted.connect(batches.append)
+    tool.clearance = 10
+    for mode, y in (("ortho", 300.0), ("cubic", 320.0)):         # both pass well below the box
+        tool.set_mode(mode)
+        send(tool, T("GraphicsSceneMousePress"), (0, y))
+        send(tool, T("GraphicsSceneMouseMove"), (300, y))
+        key(tool, "Key_Return")
+    assert len(tool.wires()) == 2 and tool.reroute_around(scene._keep[0]) == []
+    moved = QtCore.QRectF(100, 270, 100, 80)                     # "drop" a shape onto both lines
+    changes = tool.reroute_around(moved)
+    assert len(changes) == 2 and batches == [changes]
+    by_mode = {old.meta["router"]: new for _item, old, new in changes}
+    rect = (100, 270, 200, 350)
+    from smartline import edit, reroute
+    assert edit.is_orthogonal(by_mode["ortho"]) and not reroute.hits(by_mode["ortho"], rect)
+    assert not by_mode["cubic"].is_polyline and not reroute.hits(by_mode["cubic"], rect)
+    for item, _old, new in changes:
+        assert tool.route_of(item) is new                        # written back into the items
+    assert tool.reroute_around(moved) == []                      # idempotent

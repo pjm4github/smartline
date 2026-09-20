@@ -105,6 +105,16 @@ class Router:
         """Where a freshly clicked anchor should land (default: as clicked)."""
         return start
 
+    def avoiding(self) -> "Router":
+        """The obstacle-respecting version of this routing method.
+
+        Used when an existing line has to be repaired around a shape: a line
+        drawn with ``ortho`` must stay orthogonal *and* go around, so the default
+        is this router wrapped in a walkaround pass.  Routers that already avoid
+        obstacles return themselves.
+        """
+        return HugRouter(self, name=self.name, label=self.label)
+
 
 # ---------------------------------------------------------------- (a) straight
 
@@ -210,6 +220,9 @@ class HugRouter(Router):
     def constrain_end(self, start, end, ctx):
         return self.base.constrain_end(start, end, ctx)
 
+    def avoiding(self):
+        return self
+
     def route(self, start, end, ctx):
         return self.fix(self.base.route(start, end, ctx), ctx)
 
@@ -280,6 +293,9 @@ class AvoidRouter(Router):
 
     def __init__(self):
         self._fallback = HugRouter(OrthoRouter())
+
+    def avoiding(self):
+        return self
 
     def route(self, start, end, ctx):
         if g.dist(start, end) < 1e-6:
@@ -409,6 +425,9 @@ class BusRouter(Router):
         self._hug = HugRouter() if hug_obstacles else None
         self._ortho = OrthoRouter()
 
+    def avoiding(self):
+        return self if self._hug else BusRouter(self.fallback, hug_obstacles=True)
+
     # -- guide / lane ------------------------------------------------------
     def pick_guide(self, start: Pt, ctx: RouteContext) -> Optional[List[Pt]]:
         if ctx.guide is not None:
@@ -518,6 +537,11 @@ class CubicRouter(Router):
 
     def constrain_start(self, start, ctx):
         return self.base.constrain_start(start, ctx)
+
+    def avoiding(self):
+        clone = type(self)(self.base.avoiding(), self.tension, self.style, self.max_radius)
+        clone.name, clone.label = self.name, self.label
+        return clone
 
     def route(self, start, end, ctx):
         return self.shape(start, end, ctx).flatten()

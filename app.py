@@ -9,14 +9,15 @@ movable shapes, clearance-hull overlay, and a live read-out of the route that
 the current mode is producing.
 
 Canvas
-    D                toggle Draw / Select   (Select: move shapes, rubber-band, Delete)
-Select mode - click a wire to edit it (RouteEditor)
+    D / E            Draw lines  /  Select-Edit lines   (the two toolbar buttons)
+Select-Edit mode - click a wire to edit it (RouteEditor); drag shapes; Delete
     squares / bars   drag a vertex / a whole straight section (orthogonal wires stay orthogonal)
     circles          cubic control points, joined to their anchor by a tangent line
     double-click     on the wire: add a vertex      on a vertex: remove it
     C / L            section under the cursor -> cubic / line
     Shift / Alt / Ctrl while dragging: free move / break tangent / mirror tangent
-    Ctrl+Z           undo the last edit
+    R                re-route every line that overlaps the selected shape(s)  (also automatic on drop)
+    Ctrl+Z           undo the last edit / re-route
     wheel            zoom            middle-drag / Select-mode drag on empty space: pan
 While drawing  (same keys as the library's DEFAULT_KEYMAP)
     click            anchor / commit leg        double-click, Enter   finish
@@ -31,8 +32,8 @@ import math
 import sys
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import (QAction, QBrush, QColor, QKeySequence, QPainter, QPen, QPolygonF,
-                         QTextOption)
+from PyQt6.QtGui import (QAction, QActionGroup, QBrush, QColor, QKeySequence, QPainter,
+                         QPainterPathStroker, QPen, QPolygonF, QTextOption)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QDockWidget, QDoubleSpinBox,
                              QFormLayout, QGraphicsEllipseItem, QGraphicsItem,
                              QGraphicsPathItem, QGraphicsRectItem, QGraphicsScene,
@@ -83,6 +84,17 @@ class Node(QGraphicsRectItem):
             painter.setPen(QColor(70, 90, 130))
             painter.drawText(self.rect(), self.label, QTextOption(Qt.AlignmentFlag.AlignCenter))
 
+    on_dropped = None            # set by the bench: f(node) after a drag ends
+
+    def mousePressEvent(self, ev):
+        self._press_pos = self.pos()
+        super().mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        super().mouseReleaseEvent(ev)
+        if Node.on_dropped and self.pos() != getattr(self, "_press_pos", self.pos()):
+            Node.on_dropped(self)
+
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self.scene():
             self.scene().update()                # hull overlay follows the shape
@@ -101,6 +113,26 @@ class Wire(QGraphicsPathItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setZValue(1)
         self.route = route
+
+    def shape(self):
+        """An open path has no area, so by default only pixel-perfect clicks (or
+        clicks inside a bend) would select it.  Give it a 12 px wide hit zone."""
+        stroker = QPainterPathStroker()
+        stroker.setWidth(12.0)
+        return stroker.createStroke(self.path())
+
+    def boundingRect(self):
+        return self.shape().boundingRect().adjusted(-2, -2, 2, 2)
+
+    def paint(self, painter, option, widget=None):
+        if self.isSelected():                    # soft halo instead of Qt's dashed box
+            halo = QPen(QColor(255, 176, 0, 110), 7.0)
+            halo.setCapStyle(Qt.PenCapStyle.RoundCap)
+            halo.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(halo)
+            painter.drawPath(self.path())
+        painter.setPen(self.pen())
+        painter.drawPath(self.path())
 
 
 class BenchScene(QGraphicsScene):
@@ -206,7 +238,11 @@ class Bench(QMainWindow):
         self.editor.corner_radius = self.tool.corner_radius
         self.editor.snap_provider = self._snap_to_port
         self.editor.routeEdited.connect(self._on_edited)
-        self._undo = []                          # (item, previous Route)
+        self.editor.editingStarted.connect(lambda _it: self._status())
+        self.editor.editingStopped.connect(lambda _it: self._status())
+        self._undo = []                          # batches of (item, previous Route)
+        self.tool.routesRerouted.connect(self._on_rerouted)
+        Node.on_dropped = self._on_node_dropped
 
         self._populate()
         self._build_mode_dock()
@@ -278,6 +314,7 @@ class Bench(QMainWindow):
         for i, r in enumerate(self.tool.routers, 1):
             key = f"{i}  " if i <= 9 else "    "
             self.mode_list.addItem(f"{key}{r.label}   [{r.name}]")
+        self.mode_list.setMinimumHeight(10 * 20)
         self.mode_list.currentRowChanged.connect(self._pick_mode)
         self.mode_help = QLabel()
         self.mode_help.setWordWrap(True)
@@ -318,7 +355,11 @@ class Bench(QMainWindow):
         hulls.setChecked(True)
         hulls.toggled.connect(self._toggle_hulls)
         form.addRow(hulls)
+        self.auto_reroute = QCheckBox("Re-route lines when a shape is dropped")
+        self.auto_reroute.setChecked(True)
+        form.addRow(self.auto_reroute)
         for text, slot in (("Flip posture  (Space)", t.toggle_posture),
+                           ("Re-route around selected shapes  (R)", self._reroute_selected),
                            ("Add shape", self._add_node_at_center),
                            ("Clear wires", self._clear_wires),
                            ("Reset scene", self._populate)):
@@ -341,11 +382,18 @@ class Bench(QMainWindow):
 
     def _build_actions(self):
         bar = self.addToolBar("Canvas")
-        self.draw_action = QAction("Draw  (D)", self)
-        self.draw_action.setCheckable(True)
-        self.draw_action.setShortcut(QKeySequence("D"))
+        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self.draw_action = QAction("✏  Draw lines  (D)", self)
+        self.edit_action = QAction("⬚  Select / Edit lines  (E)", self)
+        for act, keys in ((self.draw_action, "D"), (self.edit_action, "E")):
+            act.setCheckable(True)
+            act.setShortcut(QKeySequence(keys))
+            group.addAction(act)
+            bar.addAction(act)
         self.draw_action.toggled.connect(self._set_drawing)
-        bar.addAction(self.draw_action)
+        bar.addSeparator()
         delete = QAction("Delete selected", self)
         delete.setShortcut(QKeySequence(QKeySequence.StandardKey.Delete))
         delete.triggered.connect(self._delete_selected)
@@ -354,6 +402,10 @@ class Bench(QMainWindow):
         undo.setShortcut(QKeySequence(QKeySequence.StandardKey.Undo))
         undo.triggered.connect(self._undo_edit)
         bar.addAction(undo)
+        rr = QAction("Re-route", self)
+        rr.setShortcut(QKeySequence("R"))
+        rr.triggered.connect(self._reroute_selected)
+        bar.addAction(rr)
         fit = QAction("Fit", self)
         fit.setShortcut(QKeySequence("F"))
         fit.triggered.connect(lambda: self.view.fitInView(self.scene.itemsBoundingRect().adjusted(-40, -40, 40, 40),
@@ -417,9 +469,15 @@ class Bench(QMainWindow):
         self.scene.update()
 
     def _status(self, extra: str = ""):
-        state = "DRAW" if self.tool.is_active() else "SELECT"
-        flip = "flipped" if self.tool._flip else "default"
-        msg = f"{state}   |   mode: {self.tool.router.label}   |   posture: {flip}"
+        if self.tool.is_active():
+            flip = "flipped" if self.tool._flip else "default"
+            msg = (f"DRAW   |   mode: {self.tool.router.label}   |   posture: {flip}"
+                   f"   |   press E to select / edit lines")
+        elif self.editor.is_editing():
+            msg = ("EDIT   |   drag squares (vertices), bars (sections), circles (curve handles)   |   "
+                   "double-click: add / remove vertex   |   C / L: section to cubic / line   |   Ctrl+Z undo")
+        else:
+            msg = "SELECT   |   click a line to edit it, drag shapes to move them   |   press D to draw"
         self.statusBar().showMessage(msg + (f"   |   {extra}" if extra else ""))
 
     def _clear_wires(self):
@@ -430,16 +488,43 @@ class Bench(QMainWindow):
         self.scene.update()
 
     def _on_edited(self, item, old, new):
-        self._undo.append((item, old))
+        self._undo.append([(item, old)])
         self.log.appendPlainText(f"[edit]  {new.to_svg(1)}")
+
+    # ---- re-routing: the library call is tool.reroute_around(shape) ----------
+    def _on_node_dropped(self, node):
+        if self.auto_reroute.isChecked():
+            self.tool.reroute_around(node)
+
+    def _reroute_selected(self):
+        shapes = [it for it in self.scene.selectedItems() if isinstance(it, Node)]
+        if not shapes:
+            self._status("select one or more shapes first")
+            return
+        total = sum(len(self.tool.reroute_around(n)) for n in shapes)
+        if not total:
+            self._status("no line overlaps the selected shape(s)")
+
+    def _on_rerouted(self, changes):
+        self._undo.append([(item, old) for item, old, _new in changes])
+        for _item, old, new in changes:
+            methods = sorted({str(l["router"]) for l in old.legs()})
+            flag = "  UNRESOLVED" if new.meta.get("unresolved") else ""
+            self.log.appendPlainText(f"[re-route as {'+'.join(methods)}]{flag}  {new.to_svg(1)}")
+        self.editor.refresh()
+        self.scene.update()
+        self._status(f"re-routed {len(changes)} line(s)   -   Ctrl+Z to undo")
 
     def _undo_edit(self):
         while self._undo:
-            item, old = self._undo.pop()
-            if item.scene() is self.scene:       # skip wires that were deleted since
-                self.editor.edit(item)
-                self.editor.set_route(old, record=False)
-                return
+            batch = [(item, old) for item, old in self._undo.pop() if item.scene() is self.scene]
+            if not batch:                        # those wires were deleted since
+                continue
+            for item, old in batch:
+                self.tool.set_item_route(item, old)
+            self.editor.refresh()
+            self.scene.update()
+            return
 
     def _delete_selected(self):
         if self.editor.delete_hot_anchor():      # a vertex under the cursor wins over the wire
@@ -467,7 +552,7 @@ class Bench(QMainWindow):
         wires = [it for it in self.scene.items() if isinstance(it, Wire)]
         assert len(wires) == len(self.tool.routers), (len(wires), len(self.tool.routers))
         # editor: select a wire, reshape it, undo
-        self.draw_action.setChecked(False)
+        self.edit_action.setChecked(True)
         target = max((w for w in wires if w._smartline_route.is_polyline),
                      key=lambda w: len(w._smartline_route.segs))
         target.setSelected(True)
@@ -477,6 +562,18 @@ class Bench(QMainWindow):
         assert not self.editor.route().is_polyline and len(self._undo) == 1
         self._undo_edit()
         assert self.editor.route().to_svg() == before.to_svg()
+        # re-route: drop a shape onto the lines, repair, undo
+        blocker = self._add_node(620, 300, 120, 400, "X")
+        n_before = len(self._undo)
+        changes = self.tool.reroute_around(blocker)
+        assert changes and len(self._undo) == n_before + 1, (len(changes), len(self._undo))
+        rect = blocker.sceneBoundingRect()
+        rect = (rect.left(), rect.top(), rect.right(), rect.bottom())
+        unresolved = [new for _i, _o, new in changes if sl.reroute.hits(new, rect)]
+        assert len(unresolved) <= len(changes) // 2, f"{len(unresolved)} of {len(changes)} still blocked"
+        self._undo_edit()
+        assert all(self.tool.route_of(i).to_svg() == o.to_svg() for i, o, _n in changes)
+        print(f"smoke: re-routed {len(changes)} lines ({len(unresolved)} unresolved), undo ok")
         print(f"smoke ok: {len(wires)} wires, modes = {[r.name for r in self.tool.routers]}")
 
 

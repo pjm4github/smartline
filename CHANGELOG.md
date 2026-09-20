@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+- `SmartLineTool.reroute_around(shape)` / `reroute_colliding()` and pure-Python `smartline.reroute`:
+  repair lines a shape now overlaps, leg by leg, with the routing method each leg was drawn with.
+- `Route.legs()` provenance (router, posture, flip per drawn leg); `Router.avoiding()`.
+- `RouteEditor.refresh()`; tool hooks `route_of` / `apply_route`, `wires()`, `set_item_route()`.
+
 ## 0.3.0
 - `smartline.edit`: pure-Python editing operations on a Route (move vertex / section / control point,
   insert, delete, convert, normalize) that keep orthogonal routes orthogonal and cubic joins smooth.
