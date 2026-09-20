@@ -146,6 +146,7 @@ class SmartLineTool(QtCore.QObject):
     routeFinished = Signal(object)     # smartline.Route - the whole connector
     lineFinished = Signal(object)      # list[QPointF] - same, flattened
     legCommitted = Signal(object)      # smartline.Route - the leg just placed
+    previewChanged = Signal(object)    # smartline.Route or None - the live leg, on every update
     modeChanged = Signal(str)          # router.name
     postureChanged = Signal(bool)
     cancelled = Signal()
@@ -447,6 +448,7 @@ class SmartLineTool(QtCore.QObject):
             self._committed_item.setPath(route_to_path(done) if done else QtGui.QPainterPath())
             self._live_item.setPath(route_to_path(self._live_route) if self._live_route
                                     else QtGui.QPainterPath())
+        self.previewChanged.emit(self._live_route if drawing else None)
 
     def _commit(self) -> None:
         leg = self._live_route

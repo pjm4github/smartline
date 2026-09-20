@@ -33,6 +33,9 @@ jobs:
       - run: python -m pytest -q
       - name: Smoke-test the demo window
         run: python examples/demo.py --smoke
+      - name: Smoke-test the PyQt6 test bench
+        if: matrix.qt == 'pyqt6'
+        run: python app.py --smoke
 
   build:
     runs-on: ubuntu-latest

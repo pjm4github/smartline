@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- `app.py`: PyQt6 test bench. `SmartLineTool.previewChanged` signal (live leg on every update).
+
 ## 0.2.0
 - `Route` result type (L/Q/C segments) with `flatten`, `to_segments`, `to_nodes`, `to_svg`.
 - Two-level router contract: `route()` skeleton + `shape()` drawn geometry.
