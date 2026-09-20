@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+- Connections: `tool.shape_moved(shape, record=True)`, `attach`, `link`, `links`, `linked_wires`.
+  Lines attached to a moved shape keep their port and are re-routed by the usual rules; other
+  overlapped lines are repaired in the same undo batch; live updates while dragging.
+
+## 0.6.0
+- Re-route priorities: shapes first (all of them), then line collisions (shared track, then
+  crossings), then winding / lane / posture / length. Candidates now include both ways round a
+  shape (`RouteContext.winding`); `AvoidRouter` prices crossings in A* (`avoid_lines`,
+  `crossing_penalty`). `geometry.crossings`, `meta["crossings"]`.
+- Port exits: attached ends leave squarely and run straight for `clearance` - drawing, re-route,
+  refresh, follow-bus, un-kink. `smartline.ports`, `geometry.port_exit`, `tool.port_exits`,
+  `port_tolerance`, `port_normal_provider`; cubic tangents from port normals.
+- Batch refresh no longer lets lines fence each other in with their old paths.
+
 ## 0.5.2
 - Fix: re-routing ignored changed settings for lines that were already clear of the shape.
   `reroute_around(shape, refresh=True)`, `refresh_routes(items)`, pure `reroute.refresh` / `near`.

@@ -37,8 +37,9 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Union
 
 from . import geometry as g
 from .qt_compat import Qt, QtCore, QtGui, QtWidgets, Signal, enum
-from . import registry, reroute as _reroute, tidy as _tidy
+from . import edit as _edit_ops, registry, reroute as _reroute, tidy as _tidy
 from .registry import default_routers
+from .ports import shape_with_exits
 from .route import Route, concat
 from .routers import RouteContext, Router
 
@@ -176,6 +177,11 @@ class SmartLineTool(QtCore.QObject):
         self.preview_pen = QtGui.QPen(QtGui.QColor(40, 130, 220), 1.5,
                                       enum(Qt, "PenStyle", "DashLine"))
         self.preview_pen.setCosmetic(True)
+        self.port_exits = True          # attached ends leave a shape squarely, straight for `clearance`
+        self.port_tolerance = 3.0       # how close to a shape's perimeter counts as attached
+        #: ``f(QPointF) -> (nx, ny) | None`` - outward unit normal of the shape at a port, for
+        #: shapes that are not rectangles (default: the nearest side of the obstacle rectangle)
+        self.port_normal_provider: Optional[Callable] = None
         self.wire_spacing = 10.0        # re-routing: distance kept between parallel lines (0 = off)
         self.kink_length = 40.0         # a section shorter than this, between two bends, is a kink
         self.tidy_reroutes = True       # un-kink lines automatically after reroute_around()
@@ -213,6 +219,7 @@ class SmartLineTool(QtCore.QObject):
         self._guides: List[List[g.Pt]] = []
         self._guide_pick: Optional[int] = None   # None = automatic (nearest)
         self._port_snapped = False
+        self._move_origin: dict = {}         # shape_moved(): routes as they were before a drag
 
         self._committed_item = self._make_preview(solid=True)
         self._live_item = self._make_preview(solid=False)
@@ -301,6 +308,7 @@ class SmartLineTool(QtCore.QObject):
                     self.scene.addItem(item)
                 item._smartline_route = route          # lets bus mode follow it
                 self._wire_items.append(item)
+                self.attach(item)                      # remember which shapes its ends sit on
         self.routeFinished.emit(route)
         self.lineFinished.emit([QPointF(x, y) for x, y in route.flatten()])
 
@@ -343,6 +351,135 @@ class SmartLineTool(QtCore.QObject):
                 nets.append(list(pts))
         return nets
 
+    # ----------------------------------------------------------- connections
+    def obstacle_items(self) -> List:
+        """The scene items the default scan treats as shapes."""
+        return [it for it in self.scene.items() if self._is_obstacle(it)]
+
+    def links(self, item) -> dict:
+        """``{"start": (shape, local_point) | None, "end": ...}`` - which shapes the
+        ends of connector *item* are attached to.  ``local_point`` is in the shape's
+        own coordinates, so it follows the shape wherever it goes."""
+        found = getattr(item, "_smartline_links", None)
+        if found is None:
+            found = {"start": None, "end": None}
+            item._smartline_links = found
+        return found
+
+    def link(self, item, which: str, shape, scene_point=None) -> None:
+        """Attach the ``"start"`` / ``"end"`` of connector *item* to *shape* (``None``
+        detaches).  *scene_point* defaults to where that end is now.  Use this when
+        your application has its own port model; :meth:`attach` does it by geometry."""
+        if shape is None:
+            self.links(item)[which] = None
+            return
+        if scene_point is None:
+            route = self.route_of(item)
+            scene_point = QPointF(*(route.start if which == "start" else route.end))
+        self.links(item)[which] = (shape, shape.mapFromScene(scene_point))
+
+    def attach(self, item) -> dict:
+        """Work out the connections of *item* from geometry: an end lying on the
+        perimeter of a shape (within ``port_tolerance``) is attached to it.  Called
+        automatically for lines this tool draws; call it again after you change a
+        line's ends yourself (e.g. from ``RouteEditor.routeEdited``)."""
+        route = self.route_of(item)
+        if route is None:
+            return {}
+        shapes = [(it, it.sceneBoundingRect()) for it in self.obstacle_items()]
+        for which, p in (("start", route.start), ("end", route.end)):
+            best = None
+            for shape, r in shapes:
+                hit = g.port_exit(p, [(r.left(), r.top(), r.right(), r.bottom())], 0.0, self.port_tolerance)
+                if hit is not None:
+                    best = shape
+                    break
+            self.link(item, which, best, QPointF(*p) if best is not None else None)
+        return self.links(item)
+
+    def linked_wires(self, shape) -> List:
+        """``[(item, which_end), ...]`` for every line end attached to *shape*."""
+        out = []
+        for item, _route in self.wires():
+            for which, ln in self.links(item).items():
+                if ln is not None and ln[0] is shape:
+                    out.append((item, which))
+        return out
+
+    def shape_moved(self, shape, record: bool = True) -> List:
+        """Call when *shape* has moved (or is moving).
+
+        1. Every line attached to it keeps its connection: the attached end goes to
+           where its port now is and the line is routed again, leg by leg, with the
+           method it was drawn with - square port exit, shapes first, then lines.
+        2. Every other line the shape now overlaps is repaired (``reroute_around``).
+
+        ``record=False`` is for live feedback while dragging: lines update but no
+        ``routesRerouted`` is emitted.  The closing ``record=True`` call then reports
+        one batch whose "old" routes are the ones from before the drag started.
+        """
+        origin = self._move_origin
+        changes, moved = [], set()
+        by_item: dict = {}
+        for item, which in self.linked_wires(shape):
+            by_item.setdefault(id(item), (item, []))[1].append(which)
+        self.refresh_obstacles()
+        pairs = self.wires()
+        for item, ends in by_item.values():
+            route = self.route_of(item)
+            origin.setdefault(id(item), (item, route))
+            new = route
+            for which in ends:
+                _shape, local = self.links(item)[which]
+                q = shape.mapToScene(local)
+                idx = 0 if which == "start" else len(new.segs)
+                new = _edit_ops.move_anchor(new, idx, (q.x(), q.y()), keep_orthogonal=False)
+            others = [r.flatten() for it, r in pairs if it is not item]
+            ctx = RouteContext(obstacles=list(self._obstacles), clearance=self.clearance,
+                               bend_penalty=self.bend_penalty, guides=[g.simplify(o) for o in others],
+                               bus_pitch=self.bus_pitch, bus_capture=self.bus_capture,
+                               wire_spacing=self.wire_spacing)
+            new = _reroute.refresh(new, ctx, lookup=self.router_named, others=others,
+                                   find_exit=self.exit_finder())
+            if self.tidy_reroutes:
+                new = _tidy.unkink(new, ctx, self.kink_length, others, find_exit=self.exit_finder()) or new
+            self.set_item_route(item, new)
+            moved.add(id(item))
+        rest = [(it, r) for it, r in self.wires() if id(it) not in moved]
+        for item, old, new in self.reroute_around(shape, wires=rest, _emit=False):
+            origin.setdefault(id(item), (item, old))
+        if not record:
+            return []
+        for item, old in origin.values():
+            new = self.route_of(item)
+            if new is not None and new.to_svg(4) != old.to_svg(4):
+                changes.append((item, old, new))
+        self._move_origin = {}
+        if changes:
+            self.routesRerouted.emit(changes)
+        return changes
+
+    # ------------------------------------------------------------ port exits
+    def exit_finder(self):
+        """``f(point, clearance) -> (stub_end, normal, shape_rect) | None`` for the
+        current obstacles, or ``None`` when ``port_exits`` is off."""
+        if not self.port_exits:
+            return None
+        rects = list(self._obstacles)
+        tol, provider = self.port_tolerance, self.port_normal_provider
+
+        def find(p, clearance):
+            hit = g.port_exit(p, rects, clearance, tol)
+            if provider is not None:
+                n = provider(QPointF(*p))
+                if n is None:
+                    return None
+                nx, ny = float(n[0]), float(n[1])
+                rect = hit[2] if hit else (p[0], p[1], p[0], p[1])
+                return ((p[0] + nx * clearance, p[1] + ny * clearance), (nx, ny), rect)
+            return hit
+        return find
+
     # ------------------------------------------------------------ re-routing
     def wires(self) -> List:
         """``[(item, Route), ...]`` for every connector in the scene that carries a route."""
@@ -355,7 +492,8 @@ class SmartLineTool(QtCore.QObject):
                 out.append((it, r))
         return out
 
-    def reroute_around(self, shape, wires: Optional[Sequence] = None, refresh: bool = False) -> List:
+    def reroute_around(self, shape, wires: Optional[Sequence] = None, refresh: bool = False,
+                       _emit: bool = True) -> List:
         """Repair every line that *shape* now overlaps.
 
         *shape* is a QGraphicsItem (its ``sceneBoundingRect()`` is used) or a
@@ -387,32 +525,41 @@ class SmartLineTool(QtCore.QObject):
         obstacles = list(self._obstacles)
         if rect not in obstacles:                 # a shape the default scan filters out still counts
             obstacles.append(rect)
-        pairs = list(wires) if wires is not None else self.wires()
-        latest = {id(item): route for item, route in pairs}       # repaired lines count at once
+        everyone = self.wires()
+        pairs = list(wires) if wires is not None else everyone
+        latest = {id(item): route for item, route in everyone}    # repaired lines count at once
         changes = []
         reach = self.clearance + 8 * self.wire_spacing + self.kink_length
-        for item, route in pairs:
-            touched = _reroute.near(route, rect, reach) if refresh else _reroute.hits(route, rect)
-            if not touched:
-                continue
-            others = [latest[id(it)].flatten() for it, _r in pairs if it is not item]
+        batch = [(item, route) for item, route in pairs
+                 if (_reroute.near(route, rect, reach) if refresh else _reroute.hits(route, rect))]
+        if refresh:
+            # lines about to be routed from scratch must not be fenced in by each other's old
+            # paths: each one sees the untouched lines plus the ones already redone
+            for item, _route in batch:
+                latest.pop(id(item), None)
+        for item, route in batch:
+            others = [latest[id(it)].flatten() for it, _r in everyone if it is not item and id(it) in latest]
             ctx = RouteContext(obstacles=obstacles, clearance=self.clearance,
                                bend_penalty=self.bend_penalty,
                                guides=[g.simplify(o) for o in others],
                                bus_pitch=self.bus_pitch, bus_capture=self.bus_capture,
                                wire_spacing=self.wire_spacing)
             if refresh:
-                new = _reroute.refresh(route, ctx, lookup=self.router_named, others=others)
+                new = _reroute.refresh(route, ctx, lookup=self.router_named, others=others,
+                                       find_exit=self.exit_finder())
                 self.set_item_route(item, route)       # repaint: corner radius may have changed
             else:
-                new = _reroute.repair(route, rect, ctx, lookup=self.router_named, others=others)
+                new = _reroute.repair(route, rect, ctx, lookup=self.router_named, others=others,
+                                      find_exit=self.exit_finder())
             if new is not None and self.tidy_reroutes:
-                new = _tidy.unkink(new, ctx, self.kink_length, others) or new
+                new = _tidy.unkink(new, ctx, self.kink_length, others, find_exit=self.exit_finder()) or new
+            if refresh:
+                latest[id(item)] = new if new is not None else route
             if new is not None and new.to_svg(4) != route.to_svg(4):
                 self.set_item_route(item, new)
                 latest[id(item)] = new
                 changes.append((item, route, new))
-        if changes:
+        if changes and _emit:
             self.routesRerouted.emit(changes)
         return changes
 
@@ -446,7 +593,8 @@ class SmartLineTool(QtCore.QObject):
             return []
         ctx, others = self._scene_context(item)
         return self._commit_change(item, route,
-                                   _tidy.unkink(route, ctx, max_jog or self.kink_length, others))
+                                   _tidy.unkink(route, ctx, max_jog or self.kink_length, others,
+                                                find_exit=self.exit_finder()))
 
     def follow_bus(self, item, guide=None) -> List:
         """Re-route connector *item* as a bus member of another line.
@@ -469,7 +617,8 @@ class SmartLineTool(QtCore.QObject):
             guide_route = pairs[idx][1] if idx is not None else None
         if guide_route is None:
             return []
-        new = _tidy.follow(route, guide_route.flatten(), ctx, others, max_jog=self.kink_length)
+        new = _tidy.follow(route, guide_route.flatten(), ctx, others, max_jog=self.kink_length,
+                           find_exit=self.exit_finder())
         return self._commit_change(item, route, new)
 
     def trim_end(self, item, which: str = "end") -> List:
@@ -501,19 +650,22 @@ class SmartLineTool(QtCore.QObject):
         pairs = self.wires()
         chosen = [(it, r) for it, r in pairs if items is None or any(it is x for x in items)]
         latest = {id(item): route for item, route in pairs}
+        for item, _route in chosen:                 # see reroute_around: old paths must not fence them in
+            latest.pop(id(item), None)
         changes = []
         for item, route in chosen:
-            others = [latest[id(it)].flatten() for it, _r in pairs if it is not item]
+            others = [latest[id(it)].flatten() for it, _r in pairs if it is not item and id(it) in latest]
             ctx = RouteContext(obstacles=list(self._obstacles), clearance=self.clearance,
                                bend_penalty=self.bend_penalty, guides=[g.simplify(o) for o in others],
                                bus_pitch=self.bus_pitch, bus_capture=self.bus_capture,
                                wire_spacing=self.wire_spacing)
-            new = _reroute.refresh(route, ctx, lookup=self.router_named, others=others)
+            new = _reroute.refresh(route, ctx, lookup=self.router_named, others=others,
+                                   find_exit=self.exit_finder())
             if self.tidy_reroutes:
-                new = _tidy.unkink(new, ctx, self.kink_length, others) or new
+                new = _tidy.unkink(new, ctx, self.kink_length, others, find_exit=self.exit_finder()) or new
             self.set_item_route(item, new if new.to_svg(4) != route.to_svg(4) else route)
+            latest[id(item)] = new
             if new.to_svg(4) != route.to_svg(4):
-                latest[id(item)] = new
                 changes.append((item, route, new))
         if changes:
             self.routesRerouted.emit(changes)
@@ -608,7 +760,8 @@ class SmartLineTool(QtCore.QObject):
                             auto_posture=self._latch,
                             angle_step=self.shift_angle_step if self._shift else 0.0,
                             bend_penalty=self.bend_penalty,
-                            guides=self._guides,
+                            guides=self._guides, avoid_lines=self._guides,
+                            wire_spacing=self.wire_spacing,
                             guide=(self._guide_order()[self._guide_pick]
                                    if self._guide_pick is not None and self._guides else None),
                             bus_pitch=self.bus_pitch, bus_capture=self.bus_capture)
@@ -632,7 +785,13 @@ class SmartLineTool(QtCore.QObject):
                 self._latch = None             # back at the anchor: re-decide
             elif self._latch is None:
                 self._latch = "HV" if dx >= dy else "VH"
-            self._live_route = Route.coerce(self.router.shape(a, c, self._context()))
+            ctx = self._context()
+            find = self.exit_finder()
+            exit_a = find(a, self.clearance) if (find and not self._legs) else None
+            exit_b = find(c, self.clearance) if find else None
+            if exit_a and exit_b and exit_a[2] == exit_b[2] and g.dist(a, c) < 2 * self.clearance:
+                exit_b = None                         # still hovering over the port it started from
+            self._live_route = shape_with_exits(self.router, a, c, ctx, exit_a, exit_b)
             self._live_route.meta.update(router=self.router.name, flip=self._flip,
                                          posture=self._latch)
             self._live = self._live_route.flatten()

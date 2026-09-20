@@ -159,6 +159,58 @@ Headless: `smartline.reroute.repair(route, rect, ctx, lookup)`, `hits`, `hit_seg
 It deliberately does **not** move line ends that are attached to the shape - keeping a wire
 glued to a port is connection tracking, which belongs to the application's model.
 
+## Connections: lines follow the shapes they are attached to
+
+```python
+tool.shape_moved(shape)                  # on drop  -> [(item, old, new), ...]  one undo batch
+tool.shape_moved(shape, record=False)    # while dragging: live update, nothing emitted
+```
+
+A line end that lies on a shape's perimeter is *connected* to that shape. The connection is
+stored as a point in the shape's own coordinates (`tool.links(item)`), so it follows the shape
+through any move. `shape_moved` then (1) puts every attached end back on its port and routes
+that line again, leg by leg, with the method it was drawn with - square port exit, shapes
+first, then lines - and (2) repairs every *other* line the shape now overlaps. After live
+`record=False` calls, the closing call reports one batch whose "old" routes are the ones from
+before the drag, so undo returns to the pre-drag picture.
+
+Connections are found by geometry when the tool finishes a line (`tool.attach(item)`; call it
+again after the user drags a line end in the editor). Applications with their own port model
+set them explicitly instead: `tool.link(item, "start", shape, scene_point)` /
+`tool.link(item, "end", None)`, and query with `tool.linked_wires(shape)`.
+
+## Collision priorities and port exits
+
+![ports](docs/ports.png)
+
+**What a re-route may and may not do**, strictly in this order (`reroute._search`):
+
+1. **Never pass through a shape.** Obstacle hits are counted over *all* shapes, not only the one
+   being repaired, and outrank everything else.
+2. **Do not collide with another line.** Running on top of a line (shared track) is the worse
+   collision and is cured by taking the next lane out; after that the candidate that *crosses*
+   the fewest lines wins. Crossing is only accepted when the alternative is a shape.
+3. Then: the natural (shorter) way round a shape, the innermost lane, the posture it was drawn with, length.
+
+To have real alternatives to choose from, each piece is tried in every legal variation of its
+own method: lanes 0-8, both postures, and both ways round a shape (`RouteContext.winding`).
+`avoid` also prices crossings inside its A* search (`avoid_lines`, `crossing_penalty` = 1000 px
+per crossing), so it plans around lines instead of discovering the crossing afterwards. Lines
+that are being re-done together do not fence each other in with their old paths. `unkink` never
+trades a kink for a crossing. A result still reports `meta["crossings"]` when some were unavoidable.
+
+**Port exits.** A line end that sits on a shape's perimeter (within `tool.port_tolerance`, 3 px)
+is *attached*. It leaves the shape at right angles to that side and runs straight for at least
+`clearance` before its first bend - while drawing (all modes, both ends), in `reroute_around`,
+`refresh_routes`, `follow_bus`, and `unkink` refuses any move that would shorten or skew a stub.
+Routing is done between the stub ends, which lie exactly on the clearance hull, so a line also
+goes properly around the shape it is attached to (a target behind the port is reached round the
+shape, not through it). Cubic lines get a straight stub and a curve tangent to the port normal.
+For non-rectangular shapes set `tool.port_normal_provider = f(QPointF) -> (nx, ny) | None`
+(PictoSync: `outward_normal_angle` from `perimeter.py`). `tool.port_exits = False` turns it off.
+Headless: `smartline.ports` (`shape_with_exits`, `rect_exit_finder`, `stubs_ok`, `obstacle_hits`),
+`geometry.port_exit`, `geometry.crossings`.
+
 ## Tidying a line: un-kink and follow-bus
 
 ![tidy](docs/tidy.png)
@@ -315,6 +367,7 @@ src/smartline/
   registry.py   register / create / default_routers / plugins        (pure Python)
   qt_compat.py  binding shim
   edit.py       Route -> Route editing operations, handles, hit-testing   (pure Python)
+  ports.py      square stubs for attached line ends; obstacle-hit accounting            (pure Python)
   tidy.py       un-kink a line; make it follow another as a bus member                   (pure Python)
   reroute.py    repair a Route around a shape using each leg's original method    (pure Python)
   tool.py       SmartLineTool (draw, reroute_around), route_to_path, keymap

@@ -239,3 +239,72 @@ def test_reroute_with_refresh_picks_up_every_changed_setting():
     applied.clear()
     tool.corner_radius = 20                                      # geometry unchanged, drawing changed
     assert tool.reroute_around(box, refresh=True) == [] and len(applied) == 1
+
+
+def test_drawing_from_a_port_leaves_squarely_for_the_clearance():
+    scene, tool, done = make()                                   # box (100,100)-(200,200)
+    tool.clearance = 12
+    for mode in ("ortho", "hug", "avoid", "cubic", "straight"):
+        tool.set_mode(mode)
+        send(tool, T("GraphicsSceneMousePress"), (200, 150))     # on the right-hand side: a port
+        send(tool, T("GraphicsSceneMouseMove"), (120, 320))      # target is behind and below the shape
+        p0, p1 = tool._live[0], tool._live[1]
+        assert p0 == (200, 150) and abs(p1[1] - 150) < 1e-6 and 211.5 <= p1[0] - 0 <= 213.5, (mode, tool._live[:3])
+        key(tool, "Key_Escape")
+    tool.port_exits = False
+    tool.set_mode("straight")
+    send(tool, T("GraphicsSceneMousePress"), (200, 150))
+    send(tool, T("GraphicsSceneMouseMove"), (120, 320))
+    assert tool._live == [(200, 150), (120, 320)]
+
+
+def test_moving_a_shape_keeps_its_lines_connected_and_routed_by_the_rules():
+    from smartline import edit, ports, reroute
+    scene, tool, done = make()                                   # shape A: (100,100)-(200,200)
+    a = scene._keep[0]
+    b = QtWidgets.QGraphicsRectItem(400, 300, 100, 100)
+    if REAL:
+        from smartline.qt_compat import QtGui
+        b.setBrush(QtGui.QBrush(QtGui.QColor(200, 200, 200)))
+    scene.addItem(b)
+    scene._keep.append(b)
+    tool.clearance = 12
+    tool.set_mode("hug")
+    send(tool, T("GraphicsSceneMousePress"), (200, 150))         # A's right side ...
+    send(tool, T("GraphicsSceneMouseMove"), (400, 350))          # ... to B's left side
+    key(tool, "Key_Return")
+    tool.set_mode("ortho")
+    send(tool, T("GraphicsSceneMousePress"), (0, 450))           # a bystander line, not attached
+    send(tool, T("GraphicsSceneMouseMove"), (300, 450))
+    send(tool, T("GraphicsSceneMouseMove"), (300, 451))
+    key(tool, "Key_Return")
+    wires = {r.legs()[0]["router"]: it for it, r in tool.wires()}
+    link = tool.links(wires["hug"])
+    assert link["start"][0] is a and link["end"][0] is b and tool.links(wires["ortho"]) == {"start": None, "end": None}
+    assert tool.linked_wires(a) == [(wires["hug"], "start")]
+    before = tool.route_of(wires["hug"])
+
+    batches = []
+    tool.routesRerouted.connect(batches.append)
+    a.setPos(-30, 150)                                           # live drag step: A now (70,250)-(170,350)
+    assert tool.shape_moved(a, record=False) == [] and batches == []
+    a.setPos(40, 290)                                            # dropped at (140,390)-(240,490): on the bystander
+    changes = tool.shape_moved(a)
+    assert len(batches) == 1 and {id(i) for i, _o, _n in changes} == {id(w) for w in wires.values()}
+    old = {id(i): o for i, o, _n in changes}
+    assert old[id(wires["hug"])] is before                      # undo goes back to before the drag
+
+    moved = tool.route_of(wires["hug"])
+    port = (240, 440)                                            # the same spot on A's right side
+    assert g_dist(moved.start, port) < 1.0 and moved.end == before.end
+    rects = [(140, 390, 240, 490), (400, 300, 500, 400)]
+    find = ports.rect_exit_finder(rects, 3.0)
+    assert ports.stubs_ok(moved.flatten(), 12, find(moved.start, 12), find(moved.end, 12)), moved.to_svg(0)
+    assert ports.obstacle_hits(moved.flatten(), rects, find(moved.start, 12), find(moved.end, 12)) == 0
+    assert edit.is_orthogonal(moved) and moved.legs()[0]["router"] == "hug"
+    assert not reroute.hits(tool.route_of(wires["ortho"]), rects[0])     # the bystander was repaired too
+    assert tool.links(wires["hug"])["start"][0] is a             # still connected for the next move
+
+
+def g_dist(p, q):
+    return ((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2) ** 0.5

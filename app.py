@@ -91,6 +91,7 @@ class Node(QGraphicsRectItem):
             painter.drawText(self.rect(), self.label, QTextOption(Qt.AlignmentFlag.AlignCenter))
 
     on_dropped = None            # set by the bench: f(node) after a drag ends
+    on_moving = None             # set by the bench: f(node) on every step of a drag
 
     def mousePressEvent(self, ev):
         self._press_pos = self.pos()
@@ -103,6 +104,8 @@ class Node(QGraphicsRectItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self.scene():
+            if Node.on_moving:
+                Node.on_moving(self)             # attached lines follow while dragging
             self.scene().update()                # hull overlay follows the shape
         return super().itemChange(change, value)
 
@@ -250,6 +253,8 @@ class Bench(QMainWindow):
         self._undo = []                          # batches of (item, previous Route)
         self.tool.routesRerouted.connect(self._on_rerouted)
         Node.on_dropped = self._on_node_dropped
+        Node.on_moving = self._on_node_moving
+        self._in_move = False
 
         self._populate()
         self._build_mode_dock()
@@ -360,11 +365,15 @@ class Bench(QMainWindow):
         self.snap_ports = QCheckBox("Snap to ports")
         self.snap_ports.setChecked(True)
         form.addRow(self.snap_ports)
+        exits = QCheckBox("Square port exits (stub = clearance)")
+        exits.setChecked(True)
+        exits.toggled.connect(lambda on: setattr(self.tool, "port_exits", on))
+        form.addRow(exits)
         hulls = QCheckBox("Show clearance hulls")
         hulls.setChecked(True)
         hulls.toggled.connect(self._toggle_hulls)
         form.addRow(hulls)
-        self.auto_reroute = QCheckBox("Re-route lines when a shape is dropped")
+        self.auto_reroute = QCheckBox("Lines follow / avoid shapes as they move")
         self.auto_reroute.setChecked(True)
         form.addRow(self.auto_reroute)
         for text, slot in (("Flip posture  (Space)", t.toggle_posture),
@@ -507,13 +516,35 @@ class Bench(QMainWindow):
         self.scene.update()
 
     def _on_edited(self, item, old, new):
+        self.tool.attach(item)                   # an end may have been dragged onto / off a shape
         self._undo.append([(item, old)])
         self.log.appendPlainText(f"[edit]  {new.to_svg(1)}")
 
     # ---- re-routing: the library call is tool.reroute_around(shape) ----------
+    def _on_node_moving(self, node):
+        """Live: keep attached lines connected while the shape is dragged (not recorded)."""
+        if self._in_move or not self.auto_reroute.isChecked() or self.tool.is_active():
+            return
+        self._in_move = True
+        try:
+            self.tool.shape_moved(node, record=False)
+        finally:
+            self._in_move = False
+
     def _on_node_dropped(self, node):
-        if self.auto_reroute.isChecked():
-            self.tool.reroute_around(node)
+        """Drop: attached lines keep their connection, overlapped lines are repaired - one undo step."""
+        if not self.auto_reroute.isChecked():
+            return
+        self._in_move = True
+        try:
+            shapes = [it for it in self.scene.selectedItems() if isinstance(it, Node)] or [node]
+            if node not in shapes:
+                shapes.append(node)
+            for n in shapes[:-1]:
+                self.tool.shape_moved(n, record=False)
+            self.tool.shape_moved(shapes[-1])
+        finally:
+            self._in_move = False
 
     def _selected_wires(self):
         wires = [it for it in self.scene.selectedItems() if isinstance(it, Wire)]
@@ -556,7 +587,8 @@ class Bench(QMainWindow):
         for _item, old, new in changes:
             methods = sorted({str(l["router"]) for l in old.legs()})
             flag = ("  UNRESOLVED" if new.meta.get("unresolved") else "") + \
-                   (f"  SHARES {new.meta['overlaps']} px OF TRACK" if new.meta.get("overlaps") else "")
+                   (f"  SHARES {new.meta['overlaps']} px OF TRACK" if new.meta.get("overlaps") else "") + \
+                   (f"  crosses {new.meta['crossings']} line(s)" if new.meta.get("crossings") else "")
             self.log.appendPlainText(f"[{'+'.join(methods)} -> {new.legs()[0]['router']}, "
                                      f"{g.bends(old.flatten())} -> {g.bends(new.flatten())} bends]{flag}  {new.to_svg(1)}")
         self.editor.refresh()
@@ -671,6 +703,20 @@ class Bench(QMainWindow):
         self._reroute_selected()
         after = min(p[1] for p in self.tool.route_of(probe).anchors())
         assert before - after >= 19, (before, after)     # at least the extra clearance (maybe a lane more)
+        # connections: a line attached to a shape follows it
+        self.scene.clearSelection()
+        h_node = next(n for n in self._nodes if n.label == "H")
+        port = h_node.ports[1].scenePos()                          # middle of H's right side
+        self.tool.set_mode("hug")
+        self.tool._anchor, self.tool._cursor = (port.x(), port.y()), (700.0, 760.0)
+        self.tool.refresh_obstacles(); self.tool.refresh_guides(); self.tool._reroute(); self.tool.finish()
+        tied = [w for w, _r in self.tool.wires() if self.tool.links(w)["start"] and self.tool.links(w)["start"][0] is h_node]
+        assert len(tied) == 1, len(tied)
+        h_node.setPos(h_node.pos().x() + 60, h_node.pos().y() - 120)
+        self._on_node_dropped(h_node)
+        now, want = self.tool.route_of(tied[0]).start, h_node.ports[1].scenePos()
+        assert abs(now[0] - want.x()) < 1 and abs(now[1] - want.y()) < 1, (now, want.x(), want.y())
+        print("smoke: attached line followed its shape")
         print(f"smoke: clearance change reached an existing line ({before:.0f} -> {after:.0f})")
         print(f"smoke ok: {len(wires)} wires, modes = {[r.name for r in self.tool.routers]}")
 

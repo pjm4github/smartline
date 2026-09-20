@@ -86,7 +86,14 @@ def install():
         def setAcceptedMouseButtons(self, b): pass
         def prepareGeometryChange(self): pass
         def update(self): pass
-        def mapFromScene(self, x): return x
+        def pos(self): return getattr(self, "_pos", QPointF(0, 0))
+        def setPos(self, x, y=None):
+            self._pos = x if y is None else QPointF(x, y)
+        def mapFromScene(self, x):
+            if isinstance(x, QPointF):
+                return QPointF(x.x() - self.pos().x(), x.y() - self.pos().y())
+            return x
+        def mapToScene(self, x): return QPointF(x.x() + self.pos().x(), x.y() + self.pos().y())
         def setSelected(self, on):
             self._sel = on
             if self._scene is not None: self._scene.selectionChanged.emit()
@@ -95,7 +102,10 @@ def install():
         def isVisible(self): return self._vis
         def parentItem(self): return None
         def scene(self): return self._scene
-        def sceneBoundingRect(self): return self._rect
+        def sceneBoundingRect(self):
+            r, p = self._rect, getattr(self, "_pos", None)
+            if r is None or p is None: return r
+            return QRectF(r.left() + p.x(), r.top() + p.y(), r.width(), r.height())
         def brush(self): return _Brush(Qt.BrushStyle.SolidPattern)
 
     class QGraphicsLineItem(QGraphicsItem): pass
