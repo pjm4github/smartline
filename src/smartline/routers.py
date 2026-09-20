@@ -60,6 +60,12 @@ class RouteContext:
     # --- line-to-line separation ---------------------------------------------
     wire_spacing: float = 0.0       # min distance kept between parallel lines (0 = off)
     margins: Dict[Rect, float] = field(default_factory=dict)   # extra hull inflation per obstacle
+    avoid_lines: Sequence[Sequence[Pt]] = ()   # other lines: crossing them is penalised
+    crossing_penalty: float = 1000.0           # AvoidRouter: px of detour one crossing is worth
+    winding: str = "auto"           # HugRouter: "auto" (shorter way round) | "cw" | "ccw"
+    # --- port exits -----------------------------------------------------------
+    start_normal: Optional[Pt] = None   # unit vector the line must leave its start along
+    end_normal: Optional[Pt] = None     # unit vector pointing *out of* the shape at its end
 
     def hulls(self, *endpoints: Pt) -> List[Rect]:
         """Inflated obstacles, skipping any that swallow an end point.
@@ -255,7 +261,12 @@ class HugRouter(Router):
             p_out = _lerp(pts[k], pts[k + 1], t_out)
             cw = [p_in] + g.walk_perimeter(h, p_in, p_out, True) + [p_out]
             ccw = [p_in] + g.walk_perimeter(h, p_in, p_out, False) + [p_out]
-            detour = cw if g.length(cw) <= g.length(ccw) else ccw
+            if ctx.winding == "cw":
+                detour = cw
+            elif ctx.winding == "ccw":
+                detour = ccw
+            else:
+                detour = cw if g.length(cw) <= g.length(ccw) else ccw
             pts = g.simplify(pts[:i + 1] + detour + pts[k + 1:])
         return pts
 
@@ -356,6 +367,8 @@ class AvoidRouter(Router):
                     est += bp                           # not heading at goal
             return est
 
+        lines = [(l[k], l[k + 1]) for l in ctx.avoid_lines for k in range(len(l) - 1)]
+        xcache: Dict[Tuple[int, int, bool], int] = {}
         tie = 0
         # heading -1 = "none yet"; a tiny bias implements the posture flip.
         open_: List[Tuple[float, int, float, int, int, int]] = [(h(si, sj, -1), 0, 0.0, si, sj, -1)]
@@ -388,6 +401,12 @@ class AvoidRouter(Router):
                         continue
                     step = abs(ys[nj] - ys[j])
                 ncost = cost + step
+                if lines:
+                    ekey = (min(i, ni), min(j, nj), bool(ux))
+                    if ekey not in xcache:
+                        p, q = (xs[i], ys[j]), (xs[ni], ys[nj])
+                        xcache[ekey] = sum(1 for u, v in lines if g.segments_cross(p, q, u, v))
+                    ncost += xcache[ekey] * ctx.crossing_penalty
                 if d >= 0 and nd != d:
                     ncost += bp
                 elif d < 0:
@@ -568,6 +587,15 @@ class CubicRouter(Router):
         if len(skeleton) == 2:
             a, b = skeleton
             k = self.tension
+            if ctx.start_normal or ctx.end_normal:
+                # leave / arrive along the port normals so the curve is tangent to the stubs
+                reach = g.dist(a, b) * k
+                axis = (1.0, 0.0) if self._posture.posture(a, b, ctx) == "HV" else (0.0, 1.0)
+                sign = 1.0 if (b[0] - a[0]) * axis[0] + (b[1] - a[1]) * axis[1] >= 0 else -1.0
+                n0 = ctx.start_normal or (axis[0] * sign, axis[1] * sign)
+                n1 = ctx.end_normal or (-axis[0] * sign, -axis[1] * sign)
+                return Route(a).cubic_to((a[0] + n0[0] * reach, a[1] + n0[1] * reach),
+                                         (b[0] + n1[0] * reach, b[1] + n1[1] * reach), b)
             if self._posture.posture(a, b, ctx) == "HV":
                 d = (b[0] - a[0]) * k
                 c1, c2 = (a[0] + d, a[1]), (b[0] - d, b[1])

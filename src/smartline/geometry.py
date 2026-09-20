@@ -316,3 +316,48 @@ def shortcut(pts: Sequence[Pt], hulls: Sequence[Rect]) -> List[Pt]:
         out.append(pts[j])
         i = j
     return simplify(out)
+
+
+# ------------------------------------------------------------ line crossings
+
+def segments_cross(p1: Pt, p2: Pt, q1: Pt, q2: Pt) -> bool:
+    """Proper crossing: the segments pass *through* each other.  Touching at an
+    end point, or running along each other, is not a crossing."""
+    def orient(a, b, c):
+        v = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        return 0 if abs(v) < 1e-9 else (1 if v > 0 else -1)
+    o1, o2 = orient(p1, p2, q1), orient(p1, p2, q2)
+    o3, o4 = orient(q1, q2, p1), orient(q1, q2, p2)
+    return o1 * o2 < 0 and o3 * o4 < 0
+
+
+def crossings(a: Sequence[Pt], b: Sequence[Pt]) -> int:
+    """How many times polyline *a* crosses polyline *b*."""
+    return sum(1 for i in range(len(a) - 1) for j in range(len(b) - 1)
+               if segments_cross(a[i], a[i + 1], b[j], b[j + 1]))
+
+
+# ---------------------------------------------------------------- port exits
+
+def port_exit(p: Pt, rects: Sequence[Rect], clearance: float,
+              tol: float = 3.0) -> Optional[Tuple[Pt, Pt, Rect]]:
+    """If *p* sits on the perimeter of one of *rects* (within *tol*), return
+    ``(stub_end, outward_normal, rect)``: the point reached by leaving the shape at
+    right angles to that side for *clearance*.  Otherwise ``None``.
+
+    A line attached to a shape has to come off it squarely and stay straight
+    until it is clear of the shape's clearance zone; routing proper starts at
+    ``stub_end`` (which lies exactly on the clearance hull).
+    """
+    best = None
+    for l, t, r, b in rects:
+        if not (l - tol <= p[0] <= r + tol and t - tol <= p[1] <= b + tol):
+            continue
+        sides = [(abs(p[0] - l), (-1.0, 0.0), (l - clearance, p[1])),
+                 (abs(p[0] - r), (1.0, 0.0), (r + clearance, p[1])),
+                 (abs(p[1] - t), (0.0, -1.0), (p[0], t - clearance)),
+                 (abs(p[1] - b), (0.0, 1.0), (p[0], b + clearance))]
+        d, n, stub = min(sides)
+        if d <= tol and (best is None or d < best[0]):
+            best = (d, stub, n, (l, t, r, b))
+    return (best[1], best[2], best[3]) if best else None

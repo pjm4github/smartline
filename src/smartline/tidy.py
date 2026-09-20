@@ -21,6 +21,7 @@ from . import edit
 from . import geometry as g
 from .geometry import Pt
 from .route import Route
+from .ports import rect_exit_finder, shape_with_exits, stubs_ok
 from .routers import BusRouter, RouteContext
 
 
@@ -44,7 +45,7 @@ def kinks(route: Route, max_jog: float = 40.0) -> List[Tuple[int, float]]:
 
 
 def unkink(route: Route, ctx: Optional[RouteContext] = None, max_jog: float = 40.0,
-           others: Sequence[Sequence[Pt]] = ()) -> Optional[Route]:
+           others: Sequence[Sequence[Pt]] = (), find_exit="rects") -> Optional[Route]:
     """Remove kinks from a straight-segment line.  Returns the cleaned Route, or
     ``None`` if there was nothing to remove (curved lines are left alone).
 
@@ -56,6 +57,10 @@ def unkink(route: Route, ctx: Optional[RouteContext] = None, max_jog: float = 40
         return None
     ctx = ctx or RouteContext()
     tol = ctx.wire_spacing * 0.5
+    if find_exit == "rects":
+        find_exit = rect_exit_finder(ctx.obstacles)
+    exit_a = find_exit(route.start, ctx.clearance) if find_exit else None
+    exit_b = find_exit(route.end, ctx.clearance) if find_exit else None
     current = edit.normalize(route)
     before = current.to_svg(4)
     dead: Set[Tuple[Pt, Pt]] = set()                  # kinks that cannot be removed legally
@@ -67,6 +72,8 @@ def unkink(route: Route, ctx: Optional[RouteContext] = None, max_jog: float = 40
         s, _len = todo[0]
         flat = current.flatten()
         base_bad, base_shared, base_bends = _violations(flat, ctx), _shared(flat, others, tol), g.bends(flat)
+        base_cross = sum(g.crossings(flat, o) for o in others)
+        had_stubs = stubs_ok(flat, ctx.clearance, exit_a, exit_b)
         options = []
         for cand in _collapses(current, s):
             pts = cand.flatten()
@@ -76,6 +83,10 @@ def unkink(route: Route, ctx: Optional[RouteContext] = None, max_jog: float = 40
                 continue
             if _violations(pts, ctx) > base_bad or _shared(pts, others, tol) > base_shared + 1.0:
                 continue
+            if sum(g.crossings(pts, o) for o in others) > base_cross:
+                continue                               # never trade a kink for a crossing
+            if had_stubs and not stubs_ok(pts, ctx.clearance, exit_a, exit_b):
+                continue                               # a port stub stays square and full length
             options.append((g.bends(pts), g.length(pts), cand))
         if options:
             current = min(options, key=lambda o: o[:2])[2]
@@ -133,7 +144,7 @@ def nearest_route(route: Route, others: Sequence[Sequence[Pt]], samples: int = 2
 
 def follow(route: Route, guide: Sequence[Pt], ctx: RouteContext,
            others: Sequence[Sequence[Pt]] = (), tidy: bool = True,
-           max_jog: float = 40.0) -> Route:
+           max_jog: float = 40.0, find_exit="rects") -> Route:
     """Re-route *route* between its own end points as a bus member of *guide*:
     parallel to it at ``ctx.bus_pitch``, on the side the line already favours,
     going around shapes, then un-kinked."""
@@ -145,11 +156,15 @@ def follow(route: Route, guide: Sequence[Pt], ctx: RouteContext,
     want = 1.0 if votes >= 0 else -1.0
     flip = g.side_of_polyline(guide, start) != want
     tol = ctx.wire_spacing * 0.5 or ctx.bus_pitch * 0.4
+    if find_exit == "rects":
+        find_exit = rect_exit_finder(ctx.obstacles)
+    exit_a = find_exit(start, ctx.clearance) if find_exit else None
+    exit_b = find_exit(end, ctx.clearance) if find_exit else None
     router, new = BusRouter(), None
     for lane in range(1, 9):                           # first lane not already taken by another line
         c = replace(ctx, guide=guide, guides=(), flip=flip, bus_capture=0.0,
                     bus_pitch=ctx.bus_pitch * lane, auto_posture=None, prev_heading=None)
-        cand = router.shape(start, end, c)
+        cand = shape_with_exits(router, start, end, c, exit_a, exit_b)
         taken = _shared(cand.flatten(), others, tol)
         if new is None or taken < best_taken:
             new, best_taken = cand, taken
@@ -158,5 +173,5 @@ def follow(route: Route, guide: Sequence[Pt], ctx: RouteContext,
     new.meta.update(router="bus", flip=flip, posture=None)
     new.meta.pop("legs", None)
     if tidy:
-        new = unkink(new, ctx, max_jog, others=others) or new
+        new = unkink(new, ctx, max_jog, others=others, find_exit=find_exit) or new
     return new

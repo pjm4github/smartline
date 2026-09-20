@@ -22,6 +22,7 @@ from . import edit
 from . import geometry as g
 from .geometry import Pt, Rect
 from .route import Route, _bezier
+from .ports import obstacle_hits, rect_exit_finder, shape_with_exits
 from .routers import HugRouter, OrthoRouter, RouteContext, Router
 
 RouterLookup = Callable[[Optional[str]], Optional[Router]]
@@ -133,9 +134,74 @@ def _default_lookup(name: Optional[str]) -> Optional[Router]:
         return None
 
 
+def _note_crossings(route: Route, others: Sequence[Sequence[Pt]]) -> None:
+    n = sum(g.crossings(route.flatten(), o) for o in others)
+    route.meta.pop("crossings", None)
+    if n:
+        route.meta["crossings"] = n
+
+
+def _search(router: Router, leg: dict, ctx: RouteContext, others: Sequence[Sequence[Pt]],
+            ends: Callable, find_exit, old_flat: Optional[Sequence[Pt]] = None, max_lanes: int = 8):
+    """Try the routing method in every legal variation and keep the best piece.
+
+    Priorities, strictly in this order:
+      1. do not pass through a shape                  (obstacle hits)
+      2. do not collide with another line: never run on top of one (shared track),
+         then cross as few as possible             (crossings)
+      3. (shared track is cured by taking the next lane out)
+      4. go the natural (shorter) way round, in the innermost lane, with the posture it was drawn with
+      5. be short
+    Variations: lane 0..max_lanes (hulls pushed out by ``wire_spacing`` each), posture
+    flip, and which way round a shape the walkaround goes (auto / cw / ccw).
+
+    ``ends(extra)`` -> ``(p, q, at_start, at_end, payload)`` gives the piece's end points for
+    a lane whose hulls are inflated by *extra* (and whether they are the line's own ends).
+    Returns ``(score, piece, payload, flip, shared_track)``.
+    """
+    spacing = ctx.wire_spacing if others else 0.0
+    tol = spacing * 0.5
+    rects = [tuple(o) for o in ctx.obstacles]
+    drawn_flip = bool(leg.get("flip"))
+    best = None
+    for lane in range(max_lanes + 1 if spacing > 0 else 1):
+        extra = lane * spacing
+        margins = {r: extra for r in rects} if lane else {}
+        p, q, at_start, at_end, payload = ends(extra)
+        exit_a = find_exit(p, ctx.clearance + extra) if (find_exit and at_start) else None
+        exit_b = find_exit(q, ctx.clearance + extra) if (find_exit and at_end) else None
+        lane_ok = False
+        for flip in (drawn_flip, not drawn_flip):
+            for rank, winding in enumerate(("auto", "cw", "ccw")):
+                c = replace(ctx, flip=flip, auto_posture=leg.get("posture"), prev_heading=None,
+                            margins=margins, winding=winding, avoid_lines=others)
+                piece = shape_with_exits(router, p, q, c, exit_a, exit_b)
+                if router.free_angle and piece.is_polyline and not (exit_a or exit_b):
+                    piece = Route.from_points(g.shortcut(piece.flatten(), c.hulls(p, q)))
+                flat = piece.flatten()
+                hits_n = obstacle_hits(flat, rects, exit_a, exit_b)
+                cross_n = sum(g.crossings(flat, o) for o in others)
+                if spacing > 0:
+                    along = (_new_shared_track(flat, others, tol, old_flat) if old_flat is not None
+                             else sum(g.overlap_length(flat, o, tol) for o in others))
+                else:
+                    along = 0.0
+                crowded = along > max(spacing, 4.0)
+                score = (hits_n, crowded, cross_n, rank > 0, lane, flip != drawn_flip, g.length(flat))
+                if best is None or score < best[0]:
+                    best = (score, piece, payload, flip, along if crowded else 0.0)
+                lane_ok = lane_ok or (rank == 0 and not crowded)
+                if hits_n == 0 and cross_n == 0 and not crowded and rank == 0:
+                    return best
+        if lane_ok:
+            break                                  # a further lane only cures shared track
+    return best
+
+
 def repair(route: Route, rect: Rect, ctx: RouteContext,
            lookup: RouterLookup = _default_lookup, max_passes: int = 4,
-           others: Sequence[Sequence[Pt]] = (), max_lanes: int = 8) -> Optional[Route]:
+           others: Sequence[Sequence[Pt]] = (), max_lanes: int = 8,
+           find_exit="rects") -> Optional[Route]:
     """Re-route the parts of *route* that pass through *rect*.
 
     *ctx* supplies the current obstacles (which should include *rect*'s shape),
@@ -153,8 +219,8 @@ def repair(route: Route, rect: Rect, ctx: RouteContext,
     if not hits(route, rect):
         return None
     rect = tuple(rect)
-    spacing = ctx.wire_spacing if others else 0.0
-    tol = spacing * 0.5
+    if find_exit == "rects":
+        find_exit = rect_exit_finder(ctx.obstacles)
     current = route
     shared = 0.0
     for _ in range(max_passes):
@@ -168,39 +234,19 @@ def repair(route: Route, rect: Rect, ctx: RouteContext,
         router = (lookup(leg.get("router")) or HugRouter(OrthoRouter())).avoiding()
         curved = any(seg.cmd != "L" for seg in current.segs[first:last])
 
-        best = None                                    # (score, piece, i, j)
-        for lane in range(max_lanes + 1 if spacing > 0 else 1):
-            extra = lane * spacing
+        def ends(extra, first=first, last=last, current=current, curved=curved):
             # lane 0 is the plain repair; further lanes push every hull out so that the
             # piece clears lines already hugging the shape *and* its neighbours
-            margins = {tuple(o): extra for o in ctx.obstacles} if lane else {}
-            margins.setdefault(rect, extra)
-            hull = g.inflate(rect, ctx.clearance + extra)
             if curved:
                 # curve vertices come from smoothing, not from the user: redo the whole leg
                 base, (i, j) = current, leg_span(current, first + 1)
             else:
-                base, i, j = _cut(current, first, last, hull)
-            a = base.anchors()
-            for flip in (bool(leg.get("flip")), not leg.get("flip")):
-                c = replace(ctx, flip=flip, auto_posture=leg.get("posture"), prev_heading=None,
-                            margins=margins)
-                piece = Route.coerce(router.shape(a[i], a[j], c))
-                if router.free_angle and piece.is_polyline:
-                    # a free-angle line takes the taut, corner-to-corner detour
-                    piece = Route.from_points(g.shortcut(piece.flatten(), c.hulls(a[i], a[j])))
-                flat = piece.flatten()
-                blocked = any(g.segment_hits(flat[k], flat[k + 1], rect) for k in range(len(flat) - 1))
-                along = sum(g.overlap_length(flat, o, tol) for o in others) if spacing > 0 else 0.0
-                crowded = along > max(spacing, 4.0)
-                score = (blocked, crowded, lane, g.length(flat))
-                if best is None or score < best[0]:
-                    best = (score, piece, i, j, along if crowded else 0.0, base)
-                if not blocked and not crowded:
-                    break
-            if best[0][0] is False and best[0][1] is False:
-                break                                  # clear of the shape and on its own track
-        _, piece, i, j, along, base = best
+                base, i, j = _cut(current, first, last, g.inflate(rect, ctx.clearance + extra))
+            pts = base.anchors()
+            return pts[i], pts[j], i == 0, j == len(pts) - 1, (base, i, j)
+
+        _score, piece, (base, i, j), _flip, along = _search(router, leg, ctx, others, ends, find_exit,
+                                                            max_lanes=max_lanes)
         a = base.anchors()
         shared = max(shared, along)
         if g.dist(piece.start, a[i]) > 1e-6 or g.dist(piece.end, a[j]) > 1e-6:
@@ -217,6 +263,7 @@ def repair(route: Route, rect: Rect, ctx: RouteContext,
         current.meta["unresolved"] = True
     if shared > 0:
         current.meta["overlaps"] = round(shared, 1)
+    _note_crossings(current, others)
     return current
 
 
@@ -245,7 +292,7 @@ def _new_shared_track(flat: Sequence[Pt], others: Sequence[Sequence[Pt]], tol: f
 
 
 def refresh(route: Route, ctx: RouteContext, lookup: RouterLookup = _default_lookup,
-            others: Sequence[Sequence[Pt]] = (), max_lanes: int = 8) -> Route:
+            others: Sequence[Sequence[Pt]] = (), max_lanes: int = 8, find_exit="rects") -> Route:
     """Route the whole line again, leg by leg, with the settings in *ctx*.
 
     :func:`repair` only touches lines that a shape overlaps, so a line that
@@ -255,11 +302,10 @@ def refresh(route: Route, ctx: RouteContext, lookup: RouterLookup = _default_loo
     flip it was drawn with, avoiding the shapes and keeping off *others*.
     Manual edits inside a leg are replaced; the leg end points are kept.
     """
+    if find_exit == "rects":
+        find_exit = rect_exit_finder(ctx.obstacles)
     a = route.anchors()
     old_flat = route.flatten()
-    spacing = ctx.wire_spacing if others else 0.0
-    tol = spacing * 0.5
-    rects = [tuple(o) for o in ctx.obstacles]
     pieces: List[Route] = []
     first = 0
     while first < len(a) - 1:
@@ -267,39 +313,23 @@ def refresh(route: Route, ctx: RouteContext, lookup: RouterLookup = _default_loo
         hi = max(hi, first + 1)
         leg = leg_at(route, first + 1)
         router = (lookup(leg.get("router")) or HugRouter(OrthoRouter())).avoiding()
-        best = None
-        for lane in range(max_lanes + 1 if spacing > 0 else 1):
-            margins = {r: lane * spacing for r in rects} if lane else {}
-            for flip in (bool(leg.get("flip")), not leg.get("flip")):
-                c = replace(ctx, flip=flip, auto_posture=leg.get("posture"), prev_heading=None,
-                            margins=margins)
-                piece = Route.coerce(router.shape(a[first], a[hi], c))
-                if router.free_angle and piece.is_polyline:
-                    piece = Route.from_points(g.shortcut(piece.flatten(), c.hulls(a[first], a[hi])))
-                flat = piece.flatten()
-                live = [r for r in rects if not any(g.contains(g.inflate(r, ctx.clearance), p)
-                                                    for p in (a[first], a[hi]))]
-                blocked = any(g.segment_hits(flat[k], flat[k + 1], r)
-                              for k in range(len(flat) - 1) for r in live)
-                along = _new_shared_track(flat, others, tol, old_flat) if spacing > 0 else 0.0
-                crowded = along > max(spacing, 4.0)
-                score = (blocked, crowded, lane, flip != bool(leg.get("flip")), g.length(flat))
-                if best is None or score < best[0]:
-                    best = (score, piece, flip)
-                if not blocked and not crowded:
-                    break
-            if best[0][0] is False and best[0][1] is False:
-                break
+        at_a, at_b = first == 0, hi == len(a) - 1
+
+        def ends(extra, p=a[first], q=a[hi], at_a=at_a, at_b=at_b):
+            return p, q, at_a, at_b, None
+
+        best = _search(router, leg, ctx, others, ends, find_exit, old_flat=old_flat, max_lanes=max_lanes)
         piece = best[1]
         if g.dist(piece.end, a[hi]) > 1e-6:
             piece = Route.from_points(piece.flatten() + [a[hi]])
-        piece.meta = {"router": leg.get("router"), "flip": best[2], "posture": leg.get("posture")}
+        piece.meta = {"router": leg.get("router"), "flip": best[3], "posture": leg.get("posture")}
         pieces.append(piece)
         first = hi
     out = pieces[0]
     for p in pieces[1:]:
         out = out.joined(p)
     out = edit.normalize(out)
-    keep = {k: v for k, v in route.meta.items() if k not in ("legs", "unresolved", "overlaps")}
+    keep = {k: v for k, v in route.meta.items() if k not in ("legs", "unresolved", "overlaps", "crossings")}
     out.meta = {**keep, **{k: v for k, v in out.meta.items() if k in ("legs", "router", "flip", "posture")}}
+    _note_crossings(out, others)
     return out
