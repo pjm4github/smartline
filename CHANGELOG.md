@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+- Re-routing keeps lines off each other: lane search with `wire_spacing`, per-obstacle `margins`,
+  cuts at hull entry/exit, `geometry.overlap_length`, taut detours for free-angle routers
+  (`Router.free_angle`, `geometry.shortcut`), `meta["overlaps"]`.
+
 ## 0.4.0
 - `SmartLineTool.reroute_around(shape)` / `reroute_colliding()` and pure-Python `smartline.reroute`:
   repair lines a shape now overlaps, leg by leg, with the routing method each leg was drawn with.

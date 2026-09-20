@@ -82,3 +82,64 @@ def test_avoiding_variants():
         assert r.avoiding() is r
     c = sl.create("cubic").avoiding()
     assert isinstance(c, sl.CubicRouter) and isinstance(c.base, sl.HugRouter) and c.name == "cubic"
+
+
+# ------------------------------------------------ lines must not end up on top of each other
+
+def _repair_all(lines, rect, obstacles, spacing=10.0, clearance=8.0):
+    latest = list(lines)
+    for k, line in enumerate(lines):
+        others = [r.flatten() for m, r in enumerate(latest) if m != k]
+        ctx = RouteContext(obstacles=obstacles, clearance=clearance, wire_spacing=spacing,
+                           guides=others, bus_pitch=12)
+        fixed = reroute.repair(line, rect, ctx, others=others)
+        if fixed is not None:
+            latest[k] = fixed
+    return latest
+
+
+def _shared_track(routes, tol=4.0):
+    flats = [r.flatten() for r in routes]
+    return max(g.overlap_length(flats[i], flats[j], tol)
+               for i in range(len(flats)) for j in range(len(flats)) if i != j)
+
+
+def test_overlap_length_counts_shared_track_not_crossings():
+    assert g.overlap_length([(0, 0), (100, 0)], [(20, 2), (60, 2)], 5) == 40
+    assert g.overlap_length([(0, 0), (100, 0)], [(50, -50), (50, 50)], 5) == 0      # a crossing
+    assert g.overlap_length([(0, 0), (100, 0)], [(0, 12), (100, 12)], 5) == 0       # a bus neighbour
+
+
+def test_bundle_of_lines_each_gets_its_own_lane():
+    rect = (200, 100, 300, 260)
+    for mode in ("ortho", "hug", "avoid", "straight", "octilinear"):
+        lines = [drawn(mode, (0, 150 + 12 * k), (500, 150 + 12 * k)) for k in range(4)]
+        fixed = _repair_all(lines, rect, [rect])
+        assert all(clear(r, rect) for r in fixed), mode
+        assert _shared_track(fixed) < 1e-6, (mode, [r.to_svg(0) for r in fixed])
+        assert not any(r.meta.get("overlaps") for r in fixed), mode
+
+
+def test_mixed_methods_keep_their_own_style_while_separating():
+    rect = (200, 100, 300, 260)
+    lines = [drawn("ortho", (0, 170), (500, 170)), drawn("cubic", (0, 182), (500, 182)),
+             drawn("straight", (0, 140), (500, 215))]
+    fixed = _repair_all(lines, rect, [rect])
+    assert all(clear(r, rect) for r in fixed) and _shared_track(fixed) < 1e-6
+    assert is_ortho(fixed[0]) and not fixed[1].is_polyline and not is_ortho(fixed[2])
+
+
+def test_bus_members_stay_a_bus_around_the_shape():
+    rect = (200, 100, 300, 260)
+    first = drawn("ortho", (0, 170), (500, 170))
+    second = sl.create("bus").shape((0, 182), (500, 182), RouteContext(guides=[first.flatten()], bus_pitch=12))
+    second.meta.update(router="bus", flip=False, posture=None)
+    fixed = _repair_all([first, second], rect, [rect])
+    assert all(clear(r, rect) for r in fixed) and _shared_track(fixed) < 1e-6
+
+
+def test_neighbouring_shape_does_not_force_lines_together():
+    rect, neighbour = (200, 100, 300, 260), (330, 60, 420, 300)
+    lines = [drawn("ortho", (0, 160 + 12 * k), (600, 160 + 12 * k)) for k in range(3)]
+    fixed = _repair_all(lines, rect, [rect, neighbour])
+    assert all(clear(r, rect) for r in fixed) and _shared_track(fixed) < 1e-6

@@ -344,6 +344,7 @@ class Bench(QMainWindow):
         t = self.tool
         form.addRow("Clearance", self._spin(0, 80, t.clearance, 2, self._set("clearance")))
         form.addRow("Bend penalty", self._spin(0, 400, t.bend_penalty, 10, self._set("bend_penalty")))
+        form.addRow("Line spacing", self._spin(0, 60, t.wire_spacing, 2, self._set("wire_spacing")))
         form.addRow("Bus pitch", self._spin(4, 80, t.bus_pitch, 2, self._set("bus_pitch")))
         form.addRow("Bus capture", self._spin(10, 400, t.bus_capture, 10, self._set("bus_capture")))
         form.addRow("Grid snap", self._spin(0, 100, t.grid, 5, self._set_grid))
@@ -509,7 +510,8 @@ class Bench(QMainWindow):
         self._undo.append([(item, old) for item, old, _new in changes])
         for _item, old, new in changes:
             methods = sorted({str(l["router"]) for l in old.legs()})
-            flag = "  UNRESOLVED" if new.meta.get("unresolved") else ""
+            flag = ("  UNRESOLVED" if new.meta.get("unresolved") else "") + \
+                   (f"  SHARES {new.meta['overlaps']} px OF TRACK" if new.meta.get("overlaps") else "")
             self.log.appendPlainText(f"[re-route as {'+'.join(methods)}]{flag}  {new.to_svg(1)}")
         self.editor.refresh()
         self.scene.update()
@@ -573,6 +575,11 @@ class Bench(QMainWindow):
         assert len(unresolved) <= len(changes) // 2, f"{len(unresolved)} of {len(changes)} still blocked"
         self._undo_edit()
         assert all(self.tool.route_of(i).to_svg() == o.to_svg() for i, o, _n in changes)
+        flats = [self.tool.route_of(w).flatten() for w in wires]
+        news = [n.flatten() for _i, _o, n in changes if not n.meta.get("overlaps")]
+        shared = max((g.overlap_length(a, b, self.tool.wire_spacing / 2) for a in news for b in flats
+                      if a is not b and a != b), default=0.0)
+        print(f"smoke: worst shared track after re-route = {shared:.1f} px")
         print(f"smoke: re-routed {len(changes)} lines ({len(unresolved)} unresolved), undo ok")
         print(f"smoke ok: {len(wires)} wires, modes = {[r.name for r in self.tool.routers]}")
 

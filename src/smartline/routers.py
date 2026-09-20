@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import heapq
 from bisect import bisect_left
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import geometry as g
@@ -57,6 +57,9 @@ class RouteContext:
     guide: Optional[Sequence[Pt]] = None  # explicit pick; None = nearest to start
     bus_pitch: float = 12.0         # lane spacing between bus members
     bus_capture: float = 60.0       # auto-pick radius around the start point
+    # --- line-to-line separation ---------------------------------------------
+    wire_spacing: float = 0.0       # min distance kept between parallel lines (0 = off)
+    margins: Dict[Rect, float] = field(default_factory=dict)   # extra hull inflation per obstacle
 
     def hulls(self, *endpoints: Pt) -> List[Rect]:
         """Inflated obstacles, skipping any that swallow an end point.
@@ -67,7 +70,7 @@ class RouteContext:
         """
         out = []
         for r in self.obstacles:
-            h = g.inflate(r, self.clearance)
+            h = g.inflate(r, self.clearance + self.margins.get(tuple(r), 0.0))
             if any(g.contains(h, p, strict=True) for p in endpoints):
                 continue
             out.append(h)
@@ -90,6 +93,7 @@ class Router:
     """
     name = "base"
     label = "Base"
+    free_angle = False      # True: segments may take any direction (detours are pulled taut)
 
     def route(self, start: Pt, end: Pt, ctx: RouteContext) -> List[Pt]:
         raise NotImplementedError
@@ -120,6 +124,7 @@ class Router:
 
 class StraightRouter(Router):
     name, label = "straight", "Straight"
+    free_angle = True
 
     def constrain_end(self, start, end, ctx):
         return g.snap_angle(start, end, ctx.angle_step) if ctx.angle_step else end
@@ -222,6 +227,10 @@ class HugRouter(Router):
 
     def avoiding(self):
         return self
+
+    @property
+    def free_angle(self):
+        return self.base.free_angle
 
     def route(self, start, end, ctx):
         return self.fix(self.base.route(start, end, ctx), ctx)

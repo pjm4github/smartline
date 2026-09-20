@@ -262,3 +262,57 @@ def subpath(pts: Sequence[Pt], i0: int, t0: float, i1: int, t1: float) -> List[P
     else:
         mid = list(reversed(pts[i1 + 1:i0 + 1]))
     return simplify([at(i0, t0)] + mid + [at(i1, t1)])
+
+
+# ------------------------------------------------------- line-on-line overlap
+
+def overlap_length(a: Sequence[Pt], b: Sequence[Pt], tol: float) -> float:
+    """Length of polyline *a* that runs *along* polyline *b*: parallel to one of
+    its segments and closer than *tol*.  Crossings do not count - only shared
+    track does, which is what makes two lines unreadable."""
+    total = 0.0
+    for i in range(len(a) - 1):
+        p0, p1 = a[i], a[i + 1]
+        la = dist(p0, p1)
+        if la < 1e-9:
+            continue
+        ux, uy = (p1[0] - p0[0]) / la, (p1[1] - p0[1]) / la
+        covered: List[Tuple[float, float]] = []
+        for j in range(len(b) - 1):
+            q0, q1 = b[j], b[j + 1]
+            lb = dist(q0, q1)
+            if lb < 1e-9:
+                continue
+            if abs(ux * (q1[1] - q0[1]) - uy * (q1[0] - q0[0])) / lb > 0.05:
+                continue                                   # not parallel (about 3 degrees)
+            d0 = abs(ux * (q0[1] - p0[1]) - uy * (q0[0] - p0[0]))
+            d1 = abs(ux * (q1[1] - p0[1]) - uy * (q1[0] - p0[0]))
+            if max(d0, d1) >= tol:
+                continue
+            s0 = ux * (q0[0] - p0[0]) + uy * (q0[1] - p0[1])
+            s1 = ux * (q1[0] - p0[0]) + uy * (q1[1] - p0[1])
+            lo, hi = max(0.0, min(s0, s1)), min(la, max(s0, s1))
+            if hi - lo > 1e-9:
+                covered.append((lo, hi))
+        covered.sort()
+        end = -1.0
+        for lo, hi in covered:                             # union, so nothing is counted twice
+            if hi > end:
+                total += hi - max(lo, end)
+                end = hi
+    return total
+
+
+def shortcut(pts: Sequence[Pt], hulls: Sequence[Rect]) -> List[Pt]:
+    """Pull a polyline taut: drop every vertex that can be skipped without the
+    line passing through a hull.  Turns a rectilinear walkaround into the
+    corner-to-corner detour a free-angle line should have."""
+    pts = list(pts)
+    out, i = [pts[0]], 0
+    while i < len(pts) - 1:
+        j = len(pts) - 1
+        while j > i + 1 and any(segment_hits(pts[i], pts[j], h) for h in hulls):
+            j -= 1
+        out.append(pts[j])
+        i = j
+    return simplify(out)

@@ -176,6 +176,7 @@ class SmartLineTool(QtCore.QObject):
         self.preview_pen = QtGui.QPen(QtGui.QColor(40, 130, 220), 1.5,
                                       enum(Qt, "PenStyle", "DashLine"))
         self.preview_pen.setCosmetic(True)
+        self.wire_spacing = 10.0        # re-routing: distance kept between parallel lines (0 = off)
         self.bus_pitch = 12.0           # spacing between bus members
         self.bus_capture = 60.0         # auto-pick radius for the guide net
         self.guide_pen = QtGui.QPen(QtGui.QColor(255, 170, 0, 140), 6.0)
@@ -365,6 +366,11 @@ class SmartLineTool(QtCore.QObject):
         ``(item, old_route, new_route)``, ready for an undo command.  A new route
         whose ``meta["unresolved"]`` is set could not be cleared (typically a
         line end lies inside the shape).
+
+        Lines are repaired one after another and each sees the ones already
+        repaired: a new piece may cross another line but never runs along it -
+        it takes the next lane out, ``wire_spacing`` apart (``meta["overlaps"]``
+        is set if no free lane was found).
         """
         r = shape.sceneBoundingRect() if hasattr(shape, "sceneBoundingRect") else shape
         rect = (r.left(), r.top(), r.right(), r.bottom())
@@ -373,17 +379,21 @@ class SmartLineTool(QtCore.QObject):
         if rect not in obstacles:                 # a shape the default scan filters out still counts
             obstacles.append(rect)
         pairs = list(wires) if wires is not None else self.wires()
+        latest = {id(item): route for item, route in pairs}       # repaired lines count at once
         changes = []
         for item, route in pairs:
             if not _reroute.hits(route, rect):
                 continue
-            guides = [g.simplify(o.flatten()) for it, o in pairs if it is not item]
+            others = [latest[id(it)].flatten() for it, _r in pairs if it is not item]
             ctx = RouteContext(obstacles=obstacles, clearance=self.clearance,
-                               bend_penalty=self.bend_penalty, guides=guides,
-                               bus_pitch=self.bus_pitch, bus_capture=self.bus_capture)
-            new = _reroute.repair(route, rect, ctx, lookup=self.router_named)
+                               bend_penalty=self.bend_penalty,
+                               guides=[g.simplify(o) for o in others],
+                               bus_pitch=self.bus_pitch, bus_capture=self.bus_capture,
+                               wire_spacing=self.wire_spacing)
+            new = _reroute.repair(route, rect, ctx, lookup=self.router_named, others=others)
             if new is not None and new.to_svg(4) != route.to_svg(4):
                 self.set_item_route(item, new)
+                latest[id(item)] = new
                 changes.append((item, route, new))
         if changes:
             self.routesRerouted.emit(changes)

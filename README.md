@@ -104,6 +104,8 @@ changes = tool.reroute_around(shape_item)      # or a QRectF; -> [(item, old_rou
 tool.reroute_colliding()                       # the same, for every shape in the scene
 ```
 
+![reroute](docs/reroute.png)
+
 Call it when a shape has been dropped onto existing lines (the bench does it on drop and
 on `R`). For each line that passes through the shape:
 
@@ -116,6 +118,15 @@ on `R`). For each line that passes through the shape:
   repaired leg by leg. Non-avoiding modes are used through `Router.avoiding()` - the same
   style plus a walkaround pass - so `ortho` stays orthogonal, `cubic` stays a curve,
   `straight` gets a minimal detour, and `hug` / `avoid` / `bus` are used as they are;
+* **lines avoid each other, not just the shape.** Lines are repaired one after another and
+  each sees the ones already done. A new piece may *cross* another line but may not run
+  *along* one (closer than half of `tool.wire_spacing`, default 10 px): if it would, the same
+  routing method is run again one lane further out - every hull pushed out by another
+  `wire_spacing` - until the piece has a track of its own, so detours nest like a bus.
+  Lines are cut exactly where they enter and leave the lane's hull, which keeps the repair
+  local and gives each lane its own entry and exit. Free-angle methods (`straight`) are then
+  pulled taut, corner to corner; `ortho`/`avoid` stay rectilinear, `octilinear` keeps 45°.
+  `route.meta["overlaps"]` reports shared track if no free lane was found in 8 tries;
 * the batch is returned and emitted as `routesRerouted` for a single undo step. If a line
   cannot be cleared (an end lies inside the shape) the best attempt is returned with
   `route.meta["unresolved"] = True`.
