@@ -14,7 +14,7 @@ def install():
         def y(self): return self._y
 
     class QRectF:
-        def __init__(self, x, y, w, h): self.a = (x, y, w, h)
+        def __init__(self, x=0, y=0, w=0, h=0): self.a = (x, y, w, h)
         def left(self): return self.a[0]
         def top(self): return self.a[1]
         def right(self): return self.a[0] + self.a[2]
@@ -25,7 +25,7 @@ def install():
     class QEvent:
         class Type(enum.Enum):
             GraphicsSceneMousePress = 1; GraphicsSceneMouseMove = 2
-            GraphicsSceneMouseDoubleClick = 3; KeyPress = 4
+            GraphicsSceneMouseDoubleClick = 3; KeyPress = 4; GraphicsSceneMouseRelease = 5
 
     class QObject:
         def __init__(self, parent=None): pass
@@ -33,6 +33,7 @@ def install():
     class _Bound:
         def __init__(self): self.slots, self.emitted = [], []
         def connect(self, f): self.slots.append(f)
+        def disconnect(self, f): self.slots.remove(f)
         def emit(self, *a):
             self.emitted.append(a)
             for s in self.slots: s(*a)
@@ -47,13 +48,13 @@ def install():
     class Qt:
         Key = enum.IntEnum("Key", dict(
             [("Key_Space", 32), ("Key_Slash", 47), ("Key_Escape", 0x1000000),
-             ("Key_Backspace", 0x1000003), ("Key_Return", 0x1000004), ("Key_Enter", 0x1000005)]
+             ("Key_Backspace", 0x1000003), ("Key_Delete", 0x1000007), ("Key_Return", 0x1000004), ("Key_Enter", 0x1000005)]
             + [(f"Key_{c}", ord(c)) for c in "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"]))
 
         class MouseButton(enum.Flag):
             NoButton = 0; LeftButton = 1; RightButton = 2
         class KeyboardModifier(enum.Flag):
-            NoModifier = 0; ShiftModifier = 0x02000000
+            NoModifier = 0; ShiftModifier = 0x02000000; ControlModifier = 0x04000000; AltModifier = 0x08000000
         class BrushStyle(enum.Enum):
             NoBrush = 0; SolidPattern = 1
         class PenStyle(enum.Enum):
@@ -83,6 +84,13 @@ def install():
         def setPen(self, p): pass
         def setZValue(self, z): pass
         def setAcceptedMouseButtons(self, b): pass
+        def prepareGeometryChange(self): pass
+        def update(self): pass
+        def mapFromScene(self, x): return x
+        def setSelected(self, on):
+            self._sel = on
+            if self._scene is not None: self._scene.selectionChanged.emit()
+        def isSelected(self): return getattr(self, "_sel", False)
         def setVisible(self, v): self._vis = v
         def isVisible(self): return self._vis
         def parentItem(self): return None
@@ -101,7 +109,10 @@ def install():
         def __init__(self, x, y, w, h): super().__init__(); self._rect = QRectF(x, y, w, h)
 
     class QGraphicsScene:
+        selectionChanged = pyqtSignal()
         def __init__(self, *a): self._items, self.filters = [], []
+        def selectedItems(self): return [i for i in self._items if i.isSelected()]
+        def removeItem(self, it): self._items.remove(it); it._scene = None
         def addItem(self, it): it._scene = self; self._items.append(it)
         def items(self): return list(self._items)
         def views(self): return []

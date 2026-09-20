@@ -66,6 +66,37 @@ to, movable shapes, clearance-hull overlay and a live read-out of each route.
 
 Shapes containing the anchor or the cursor never repel the line, so ports work naturally.
 
+## Editing finished lines
+
+Drawing and editing are separate classes in the same package, sharing the `Route` model:
+`SmartLineTool` *produces* a Route, `RouteEditor` *reshapes* one, and the pure-Python
+`smartline.edit` functions underneath do the geometry (so they are usable headless too).
+
+```python
+from smartline import RouteEditor
+
+editor = RouteEditor(scene)                       # event filter, like the tool
+editor.routeEdited.connect(lambda item, old, new: undo_stack.push(MyCmd(item, old, new)))
+editor.set_active(True)                           # edits whichever single connector is selected
+```
+
+| handle | what it does |
+|---|---|
+| square (anchor) | move a vertex. Orthogonal routes stay orthogonal: neighbours slide on their axes; Shift frees it |
+| bar (section grip) | move a whole straight section perpendicular to itself; a section touching a pinned end grows a jog rather than pulling the end off its port |
+| circle (control point) | bend a cubic. A thin **tangent line** joins it to its anchor. The partner handle across the anchor stays collinear (`aligned`); Ctrl = `mirrored` lengths; Alt = `free` (cusp) |
+
+Double-click the line to add a vertex, double-click a vertex (or Delete) to remove it,
+`C` / `L` turns the section under the cursor into a cubic / a line, Esc abandons a drag.
+Clicks that do not land on a handle pass straight through, so selection and moving still work.
+
+Integration points mirror the tool: `editor.apply(item, route)` pushes a route back into
+*your* item class (default: `setPath` on a `QGraphicsPathItem`), `editor.route_of(item)` says
+where an item keeps its route, `snap_provider` re-snaps dragged ends to ports, and
+`routeEdited(item, old, new)` fires once per gesture for undo. Headless:
+`edit.move_segment`, `move_anchor`, `move_control`, `insert_anchor`, `delete_anchor`,
+`convert_segment`, `normalize`, `handles`, `nearest_segment` - all `Route -> Route`.
+
 ## The framework: one contract, three extension points
 
 ```
@@ -195,7 +226,9 @@ src/smartline/
   routers.py    RouteContext + router strategies                     (pure Python)
   registry.py   register / create / default_routers / plugins        (pure Python)
   qt_compat.py  binding shim
+  edit.py       Route -> Route editing operations, handles, hit-testing   (pure Python)
   tool.py       SmartLineTool, route_to_path, keymap
+  editor.py     RouteEditor: handles overlay, drag / insert / delete / convert
 tests/          core + framework tests (no Qt) and tool tests (real Qt, or a stub without it)
 app.py (PyQt6 test bench)   examples/demo.py   tools/gallery.py   .github/workflows/ci.yml
 ```

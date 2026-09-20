@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+- `smartline.edit`: pure-Python editing operations on a Route (move vertex / section / control point,
+  insert, delete, convert, normalize) that keep orthogonal routes orthogonal and cubic joins smooth.
+- `RouteEditor`: select-and-reshape editor with anchor, section and tangent-line control handles.
 - `app.py`: PyQt6 test bench. `SmartLineTool.previewChanged` signal (live leg on every update).
 
 ## 0.2.0

@@ -10,6 +10,13 @@ the current mode is producing.
 
 Canvas
     D                toggle Draw / Select   (Select: move shapes, rubber-band, Delete)
+Select mode - click a wire to edit it (RouteEditor)
+    squares / bars   drag a vertex / a whole straight section (orthogonal wires stay orthogonal)
+    circles          cubic control points, joined to their anchor by a tangent line
+    double-click     on the wire: add a vertex      on a vertex: remove it
+    C / L            section under the cursor -> cubic / line
+    Shift / Alt / Ctrl while dragging: free move / break tangent / mirror tangent
+    Ctrl+Z           undo the last edit
     wheel            zoom            middle-drag / Select-mode drag on empty space: pan
 While drawing  (same keys as the library's DEFAULT_KEYMAP)
     click            anchor / commit leg        double-click, Enter   finish
@@ -34,6 +41,7 @@ from PyQt6.QtWidgets import (QApplication, QCheckBox, QDockWidget, QDoubleSpinBo
 
 import smartline as sl
 from smartline import geometry as g
+from smartline.editor import RouteEditor
 from smartline.tool import SmartLineTool, route_to_path
 
 WIRE_COLORS = ["#1f6fd0", "#2a9d5c", "#8a3fd0", "#d0571f", "#0f8b8d", "#b8336a"]
@@ -193,6 +201,13 @@ class Bench(QMainWindow):
         self.tool.item_factory = self._make_wire
         self.scene.tool = self.tool
 
+        self.editor = RouteEditor(self.scene)
+        self.editor.grid = self.tool.grid
+        self.editor.corner_radius = self.tool.corner_radius
+        self.editor.snap_provider = self._snap_to_port
+        self.editor.routeEdited.connect(self._on_edited)
+        self._undo = []                          # (item, previous Route)
+
         self._populate()
         self._build_mode_dock()
         self._build_settings_dock()
@@ -204,6 +219,7 @@ class Bench(QMainWindow):
         self.tool.previewChanged.connect(self._on_preview)
         self.tool.routeFinished.connect(self._on_finished)
         self.tool.cancelled.connect(lambda: self._status("cancelled"))
+        self.editor.routeChanged.connect(lambda _it, r: self._on_preview(r))
 
         self.draw_action.setChecked(True)
         self._on_mode(self.tool.mode)
@@ -334,6 +350,10 @@ class Bench(QMainWindow):
         delete.setShortcut(QKeySequence(QKeySequence.StandardKey.Delete))
         delete.triggered.connect(self._delete_selected)
         bar.addAction(delete)
+        undo = QAction("Undo edit", self)
+        undo.setShortcut(QKeySequence(QKeySequence.StandardKey.Undo))
+        undo.triggered.connect(self._undo_edit)
+        bar.addAction(undo)
         fit = QAction("Fit", self)
         fit.setShortcut(QKeySequence("F"))
         fit.triggered.connect(lambda: self.view.fitInView(self.scene.itemsBoundingRect().adjusted(-40, -40, 40, 40),
@@ -350,7 +370,7 @@ class Bench(QMainWindow):
         return apply
 
     def _set_grid(self, v):
-        self.tool.grid = float(v)
+        self.tool.grid = self.editor.grid = float(v)
         self.scene.grid_step = float(v) * 2 if v else 0.0
         self.scene.update()
 
@@ -360,6 +380,8 @@ class Bench(QMainWindow):
 
     def _set_drawing(self, on):
         self.tool.set_active(on)
+        self.editor.corner_radius = self.tool.corner_radius
+        self.editor.set_active(not on)           # draw and edit are mutually exclusive
         self.view.setDragMode(QGraphicsView.DragMode.NoDrag if on
                               else QGraphicsView.DragMode.RubberBandDrag)
         self.view.viewport().setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
@@ -407,7 +429,22 @@ class Bench(QMainWindow):
         self.tool._wire_items.clear()
         self.scene.update()
 
+    def _on_edited(self, item, old, new):
+        self._undo.append((item, old))
+        self.log.appendPlainText(f"[edit]  {new.to_svg(1)}")
+
+    def _undo_edit(self):
+        while self._undo:
+            item, old = self._undo.pop()
+            if item.scene() is self.scene:       # skip wires that were deleted since
+                self.editor.edit(item)
+                self.editor.set_route(old, record=False)
+                return
+
     def _delete_selected(self):
+        if self.editor.delete_hot_anchor():      # a vertex under the cursor wins over the wire
+            return
+        self.editor.stop()
         for it in self.scene.selectedItems():
             self.scene.removeItem(it)
             if it in self._nodes:
@@ -429,6 +466,17 @@ class Bench(QMainWindow):
             self.tool.finish()
         wires = [it for it in self.scene.items() if isinstance(it, Wire)]
         assert len(wires) == len(self.tool.routers), (len(wires), len(self.tool.routers))
+        # editor: select a wire, reshape it, undo
+        self.draw_action.setChecked(False)
+        target = max((w for w in wires if w._smartline_route.is_polyline),
+                     key=lambda w: len(w._smartline_route.segs))
+        target.setSelected(True)
+        assert self.editor.is_editing() and self.editor.item() is target
+        before = self.editor.route()
+        self.editor.set_route(sl.edit.convert_segment(sl.edit.insert_anchor(before, 0, 0.5), 0, "C"))
+        assert not self.editor.route().is_polyline and len(self._undo) == 1
+        self._undo_edit()
+        assert self.editor.route().to_svg() == before.to_svg()
         print(f"smoke ok: {len(wires)} wires, modes = {[r.name for r in self.tool.routers]}")
 
 

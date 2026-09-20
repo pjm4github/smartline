@@ -14,7 +14,7 @@ except ImportError:                       # tiny stand-in: only pytest.raises is
         raise AssertionError(f"{exc.__name__} not raised")
     sys.modules["pytest"] = types.SimpleNamespace(raises=_raises)
 fails = 0
-for name in ("tests.test_routers", "tests.test_framework", "tests.test_tool"):
+for name in ("tests.test_routers", "tests.test_framework", "tests.test_edit", "tests.test_tool", "tests.test_editor"):
     mod = importlib.import_module(name)
     for n in sorted(dir(mod)):
         if n.startswith("test_"):
