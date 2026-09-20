@@ -90,3 +90,25 @@ def test_follows_selection():
     item.setSelected(False)
     assert not ed.is_editing()
     ed.set_active(False)
+
+
+def test_click_an_end_selects_it_and_delete_trims_section_plus_curve():
+    from smartline import blend_corners
+    rounded = blend_corners([(0, 0), (100, 0), (100, 80), (200, 80)], 20)
+    scene, item, ed, log = make(rounded)
+    gone = []
+    ed.removalRequested.connect(gone.append)
+    send(ed, T("GraphicsSceneMousePress"), (200, 80))            # click (no drag) on the end handle
+    send(ed, T("GraphicsSceneMouseRelease"), (200, 80))
+    assert ed.selected_end() == "end"
+    doomed = ed.end_selection_points()                           # last section + the curve before it
+    assert doomed[0] == (100, 60) and doomed[-1] == (200, 80)
+    delete = lambda: ed.eventFilter(ed.scene, Ev(T("KeyPress"), key=enum(Qt, "Key", "Key_Delete")))  # noqa: E731
+    assert delete() and [s.cmd for s in ed.route().segs] == ["L", "C", "L"] and len(log) == 1
+    assert ed.selected_end() == "end" and delete() and len(ed.route().segs) == 1
+    assert delete() and gone == [item] and not ed.is_editing()   # nothing left -> ask the app to delete
+    scene, item, ed, log = make(rounded)
+    send(ed, T("GraphicsSceneMousePress"), (0, 0)); send(ed, T("GraphicsSceneMouseRelease"), (0, 0))
+    assert ed.selected_end() == "start"
+    send(ed, T("GraphicsSceneMousePress"), (500, 500))           # click away clears the selection
+    assert ed.selected_end() is None

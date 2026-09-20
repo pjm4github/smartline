@@ -459,6 +459,21 @@ class SmartLineTool(QtCore.QObject):
         new = _tidy.follow(route, guide_route.flatten(), ctx, others, max_jog=self.kink_length)
         return self._commit_change(item, route, new)
 
+    def trim_end(self, item, which: str = "end") -> List:
+        """Delete the last section from the ``"start"`` or ``"end"`` of connector
+        *item*, together with the curve that attaches it to the rest of the line.
+        Returns / emits ``[(item, old, new)]``; ``new`` is ``None`` when nothing
+        would be left, in which case the item is untouched and the caller should
+        delete it."""
+        route = self.route_of(item)
+        if route is None:
+            return []
+        from . import edit as _edit
+        new = _edit.trim_end(route, which)
+        if new is None:
+            return [(item, route, None)]
+        return self._commit_change(item, route, new)
+
     def reroute_colliding(self) -> List:
         """``reroute_around`` for every obstacle in the scene - a global clean-up."""
         changes = []

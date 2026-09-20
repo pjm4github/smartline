@@ -89,3 +89,33 @@ def test_nearest_segment():
     s, t, d = edit.nearest_segment(Z, (100, 40.5))
     assert s == 1 and abs(t - 0.50625) < 1e-9 and d < 1e-9
     assert edit.nearest_segment(S, (150, 30))[0] == 1
+
+
+# ------------------------------------------------------------ trimming from an end
+from smartline import blend_corners  # noqa: E402
+
+ROUNDED = blend_corners([(0, 0), (100, 0), (100, 80), (200, 80)], 20)     # L C L C L
+
+
+def test_end_span_takes_the_curve_attached_to_the_last_section():
+    assert [s.cmd for s in ROUNDED.segs] == ["L", "C", "L", "C", "L"]
+    assert edit.end_span(ROUNDED, "end") == [3, 4] and edit.end_span(ROUNDED, "start") == [0, 1]
+    assert edit.end_span(Z, "end") == [2] and edit.end_span(S, "end") == [1]
+
+
+def test_trim_end_eats_the_line_back_section_by_section():
+    r = edit.trim_end(ROUNDED, "end")
+    assert [s.cmd for s in r.segs] == ["L", "C", "L"] and r.start == (0, 0) and r.end == (100, 60)
+    r = edit.trim_end(r, "end")
+    assert [s.cmd for s in r.segs] == ["L"] and r.end == (80, 0)
+    assert edit.trim_end(r, "end") is None                           # nothing would be left
+
+
+def test_trim_start_and_leg_bookkeeping():
+    r = edit.trim_end(ROUNDED, "start")
+    assert r.start == (100, 20) and [s.cmd for s in r.segs] == ["L", "C", "L"] and r.end == (200, 80)
+    two = Route.from_points([(0, 0), (50, 0)], router="ortho").joined(
+        Route.from_points([(50, 0), (50, 40), (90, 40)], router="hug"))
+    cut = edit.trim_end(two, "end")
+    assert cut.end == (50, 40) and cut.legs()[-1]["end"] == (50, 40)
+    assert edit.span_points(Z, [2]) == [(100, 80), (200, 80)]

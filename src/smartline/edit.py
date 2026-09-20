@@ -247,6 +247,51 @@ def delete_anchor(route: Route, i: int) -> Route:
     return _with(route, route.start, segs)
 
 
+def end_span(route: Route, which: str = "end") -> List[int]:
+    """Segment indices that :func:`trim_end` would remove from the ``"start"`` or
+    ``"end"`` of the line: the terminal section, plus the curve that joins it to
+    the rest of the line when there is one (a corner blend belongs to the section
+    it rounds off - leaving it behind would end the line in a stray hook)."""
+    n = len(route.segs)
+    if n == 0:
+        return []
+    order = list(range(n)) if which == "start" else list(range(n - 1, -1, -1))
+    span = [order[0]]
+    if route.segs[order[0]].cmd == "L" and n > 1 and route.segs[order[1]].cmd != "L":
+        span.append(order[1])
+    return sorted(span)
+
+
+def trim_end(route: Route, which: str = "end") -> Optional[Route]:
+    """Delete the last section at the ``"start"`` or ``"end"`` of the line (see
+    :func:`end_span`).  Returns the shortened Route, or ``None`` when nothing
+    would be left - the caller should then delete the line itself."""
+    span = end_span(route, which)
+    if not span or len(span) >= len(route.segs):
+        return None
+    a = route.anchors()
+    if which == "start":
+        keep = route.segs[span[-1] + 1:]
+        out = _with(route, a[span[-1] + 1], keep)
+    else:
+        out = _with(route, route.start, route.segs[:span[0]])
+    legs = out.meta.get("legs")
+    if legs:                                           # the surviving last leg now stops at the new end
+        legs = [dict(l) for l in legs]
+        legs[-1]["end"] = out.end
+        out.meta["legs"] = legs
+    return out
+
+
+def span_points(route: Route, span: Sequence[int]) -> List[Pt]:
+    """Flattened geometry of a run of segments (for highlighting)."""
+    if not span:
+        return []
+    a = route.anchors()
+    piece = Route(a[span[0]], [route.segs[k] for k in span])
+    return piece.flatten()
+
+
 def convert_segment(route: Route, s: int, cmd: str) -> Route:
     """Turn segment *s* into a line (``"L"``) or a cubic (``"C"``)."""
     a = route.anchors()

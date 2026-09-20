@@ -86,6 +86,14 @@ editor.set_active(True)                           # edits whichever single conne
 | bar (section grip) | move a whole straight section perpendicular to itself; a section touching a pinned end grows a jog rather than pulling the end off its port |
 | circle (control point) | bend a cubic. A thin **tangent line** joins it to its anchor. The partner handle across the anchor stays collinear (`aligned`); Ctrl = `mirrored` lengths; Alt = `free` (cusp) |
 
+**Trimming from an end.** Click a line end to select it: the last section turns red, together
+with the curve that attaches it to the rest of the line (a corner blend belongs to the
+section it rounds off; leaving it would end the line in a stray hook). Delete removes it, and
+the end stays selected so pressing Delete again eats the line back section by section. When
+nothing would be left the editor emits `removalRequested(item)` instead. Programmatic:
+`editor.select_end("start"|"end")`, `editor.trim_end()`, `tool.trim_end(item, "end")`, and
+headless `edit.end_span(route, which)` / `edit.trim_end(route, which)`.
+
 Double-click the line to add a vertex, double-click a vertex (or Delete) to remove it,
 `C` / `L` turns the section under the cursor into a cubic / a line, Esc abandons a drag.
 Clicks that do not land on a handle pass straight through, so selection and moving still work.

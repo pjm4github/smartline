@@ -18,6 +18,8 @@ What the user sees on the selected connector
 Gestures
     double-click the line      insert an anchor there
     double-click an anchor     delete it            (also Delete / Backspace)
+    click a line END           select it: the last section - and the curve attached to it -
+                               turns red; Delete / Backspace trims it off (repeat to eat back)
     C / L                      make the section under the cursor a cubic / a line
     Shift  while dragging      free move (do not keep the route orthogonal)
     Alt    while dragging      break the tangent (cusp);  Ctrl = mirrored lengths
@@ -79,6 +81,14 @@ class _Overlay(QtWidgets.QGraphicsItem):
         for h in ed._handles:                                 # tangent lines first, under the knobs
             if h.is_control and h.anchor is not None:
                 painter.drawLine(QPointF(*h.anchor), QPointF(*h.pos))
+        doomed = ed.end_selection_points()              # what Delete would remove from the end
+        if len(doomed) >= 2:
+            red = QtGui.QPen(QtGui.QColor(ed.delete_color), 0)
+            red.setWidthF(4.0)
+            red.setCosmetic(True)
+            painter.setPen(red)
+            for k in range(len(doomed) - 1):
+                painter.drawLine(QPointF(*doomed[k]), QPointF(*doomed[k + 1]))
         painter.setPen(outline)
         for h in ed._handles:
             hot = ed._hot is not None and (h.kind, h.index) == (ed._hot.kind, ed._hot.index)
@@ -97,6 +107,7 @@ class RouteEditor(QtCore.QObject):
     editingStopped = Signal(object)            # item
     routeChanged = Signal(object, object)      # item, Route   - live, on every drag step
     routeEdited = Signal(object, object, object)   # item, old Route, new Route - one per gesture
+    removalRequested = Signal(object)          # item - trimming would leave nothing: delete the line
 
     def __init__(self, scene, parent=None):
         super().__init__(parent if parent is not None else scene)
@@ -109,7 +120,7 @@ class RouteEditor(QtCore.QObject):
         self.keep_orthogonal = True
         self.link = "aligned"            # default tangent link: aligned | mirrored | free
         self.show_section_grips = True
-        self.color, self.hot_color = "#1f6fd0", "#ffb000"
+        self.color, self.hot_color, self.delete_color = "#1f6fd0", "#ffb000", "#e5484d"
         #: ``f(QPointF) -> QPointF | None`` - ports; applied to route *ends* only
         self.snap_provider: Optional[Callable] = None
         #: ``f(item) -> Route | None`` - where an item keeps its route
@@ -123,6 +134,7 @@ class RouteEditor(QtCore.QObject):
         self._handles: List[edit.Handle] = []
         self._hot: Optional[edit.Handle] = None
         self._drag = None                # (handle, base route, grab point)
+        self._end: Optional[str] = None  # "start" / "end": the line end selected for trimming
         self._cursor: g.Pt = (0.0, 0.0)
         self._overlay = _Overlay(self)
         self._overlay.setVisible(False)
@@ -173,7 +185,7 @@ class RouteEditor(QtCore.QObject):
 
     def stop(self) -> None:
         item, self._item, self._route = self._item, None, None
-        self._handles, self._hot, self._drag = [], None, None
+        self._handles, self._hot, self._drag, self._end = [], None, None, None
         self._overlay.setVisible(False)
         if item is not None:
             self.editingStopped.emit(item)
@@ -195,6 +207,50 @@ class RouteEditor(QtCore.QObject):
         self._push(route)
         if record:
             self.routeEdited.emit(self._item, old, route)
+
+    # ---- trimming from an end -------------------------------------------------
+    def select_end(self, which: Optional[str]) -> None:
+        """Select the ``"start"`` or ``"end"`` of the edited line (``None`` clears).
+        The section that :meth:`trim_end` would delete - the last segment and the
+        curve attached to it, if any - is highlighted."""
+        self._end = which if which in ("start", "end") else None
+        self._overlay.update()
+
+    def selected_end(self) -> Optional[str]:
+        """The selected end, else the end whose handle is under the cursor."""
+        if self._end:
+            return self._end
+        h, r = self._hot, self._route
+        if r is not None and h is not None and h.kind == "anchor":
+            if h.index == 0:
+                return "start"
+            if h.index == len(r.segs):
+                return "end"
+        return None
+
+    def end_selection_points(self) -> List[g.Pt]:
+        which = self.selected_end()
+        if which is None or self._route is None or self._drag:
+            return []
+        return edit.span_points(self._route, edit.end_span(self._route, which))
+
+    def trim_end(self, which: Optional[str] = None) -> bool:
+        """Delete the last section from an end of the line - the selected end by
+        default.  The end stays selected, so repeating it eats the line back
+        section by section.  If nothing would be left, ``removalRequested`` is
+        emitted instead.  Returns True if it acted."""
+        which = which or self.selected_end()
+        if which is None or self._route is None:
+            return False
+        new = edit.trim_end(self._route, which)
+        if new is None:
+            item = self._item
+            self.stop()
+            self.removalRequested.emit(item)
+            return True
+        self._end = which
+        self.set_route(new)
+        return True
 
     def delete_hot_anchor(self) -> bool:
         """Delete the anchor under the cursor.  Returns True if one was removed -
@@ -295,6 +351,9 @@ class RouteEditor(QtCore.QObject):
             sp = ev.scenePos()
             h = self._hit((sp.x(), sp.y()))
             if h is None:
+                self._hot = None
+                if self._end:
+                    self.select_end(None)
                 return False                                  # not ours: selection, moving ... carry on
             self._hot = h
             self._drag = (h, self._route, (sp.x(), sp.y()))
@@ -308,6 +367,10 @@ class RouteEditor(QtCore.QObject):
             self._push(final)
             if changed:
                 self.routeEdited.emit(self._item, base, final)
+            else:                                             # a plain click on a line end selects it
+                h = self._hot
+                ends = {0: "start", len(final.segs): "end"}
+                self.select_end(ends.get(h.index) if h is not None and h.kind == "anchor" else None)
             return True
         if t == _EV_DBL and ev.button() == _LEFT:
             sp = ev.scenePos()
@@ -333,7 +396,7 @@ class RouteEditor(QtCore.QObject):
             self._push(self._route)
             return True
         if k in (_K("Key_Delete"), _K("Key_Backspace")):
-            return self.delete_hot_anchor()
+            return self.delete_hot_anchor() or self.trim_end()
         if k in (_K("Key_C"), _K("Key_L")):
             s, _, d = edit.nearest_segment(self._route, self._cursor)
             if d <= self.hit_px * 1.5 / self._scale():

@@ -14,6 +14,8 @@ Select-Edit mode - click a wire to edit it (RouteEditor); drag shapes; Delete
     squares / bars   drag a vertex / a whole straight section (orthogonal wires stay orthogonal)
     circles          cubic control points, joined to their anchor by a tangent line
     double-click     on the wire: add a vertex      on a vertex: remove it
+    click a line END it turns red together with the curve attached to it; Delete trims it off,
+                     press Delete again to keep eating the line back from that end
     C / L            section under the cursor -> cubic / line
     Shift / Alt / Ctrl while dragging: free move / break tangent / mirror tangent
     R                re-route every line that overlaps the selected shape(s)  (also automatic on drop)
@@ -240,6 +242,7 @@ class Bench(QMainWindow):
         self.editor.corner_radius = self.tool.corner_radius
         self.editor.snap_provider = self._snap_to_port
         self.editor.routeEdited.connect(self._on_edited)
+        self.editor.removalRequested.connect(self._remove_wire)
         self.editor.editingStarted.connect(lambda _it: self._status())
         self.editor.editingStopped.connect(lambda _it: self._status())
         self._undo = []                          # batches of (item, previous Route)
@@ -487,7 +490,8 @@ class Bench(QMainWindow):
                    f"   |   press E to select / edit lines")
         elif self.editor.is_editing():
             msg = ("EDIT   |   drag squares (vertices), bars (sections), circles (curve handles)   |   "
-                   "double-click: add / remove vertex   |   C / L: section to cubic / line   |   Ctrl+Z undo")
+                   "click an END + Delete: trim last section   |   double-click: add / remove vertex   |   "
+                   "C / L: cubic / line   |   Ctrl+Z undo")
         else:
             msg = "SELECT   |   click a line to edit it, drag shapes to move them   |   press D to draw"
         self.statusBar().showMessage(msg + (f"   |   {extra}" if extra else ""))
@@ -560,8 +564,17 @@ class Bench(QMainWindow):
             self.scene.update()
             return
 
+    def _remove_wire(self, item):
+        """The editor trimmed a line down to nothing."""
+        if item is not None and item.scene() is self.scene:
+            self.scene.removeItem(item)
+            self.scene.update()
+            self._status("line removed")
+
     def _delete_selected(self):
         if self.editor.delete_hot_anchor():      # a vertex under the cursor wins over the wire
+            return
+        if self.editor.trim_end():               # ... then a selected line end (section + its curve)
             return
         self.editor.stop()
         for it in self.scene.selectedItems():
@@ -622,6 +635,16 @@ class Bench(QMainWindow):
         assert self.tool.unkink(kinky) and g.bends(self.tool.route_of(kinky).flatten()) <= 1
         assert self.tool.follow_bus(kinky) is not None
         print("smoke: unkink + follow_bus ok")
+        rounded = self._make_wire(sl.blend_corners([(40, 800), (200, 800), (200, 860), (400, 860)], 20))
+        self.scene.addItem(rounded)
+        rounded._smartline_route = sl.blend_corners([(40, 800), (200, 800), (200, 860), (400, 860)], 20)
+        self.scene.clearSelection()
+        rounded.setSelected(True)
+        self.editor.select_end("end")
+        assert len(self.editor.end_selection_points()) > 2           # the section and its curve
+        assert self.editor.trim_end() and [x.cmd for x in self.editor.route().segs] == ["L", "C", "L"]
+        assert self.tool.trim_end(rounded, "start")
+        print("smoke: trim_end ok")
         print(f"smoke ok: {len(wires)} wires, modes = {[r.name for r in self.tool.routers]}")
 
 

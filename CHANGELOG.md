@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+- Trim a line from an end: `edit.end_span` / `edit.trim_end`, `RouteEditor.select_end` / `trim_end`
+  (click an end, Delete; highlights the section and its attached curve), `removalRequested`,
+  `SmartLineTool.trim_end(item, which)`.
+
 ## 0.5.0
 - `SmartLineTool.unkink(item)` and `follow_bus(item, guide=None)`; pure-Python `smartline.tidy`
   (`unkink`, `kinks`, `nearest_route`, `follow`). Re-routes are un-kinked automatically.
