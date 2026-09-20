@@ -185,3 +185,28 @@ def test_reroute_around_a_moved_shape_keeps_each_lines_method():
     for item, _old, new in changes:
         assert tool.route_of(item) is new                        # written back into the items
     assert tool.reroute_around(moved) == []                      # idempotent
+
+
+def test_unkink_and_follow_bus_on_selected_lines():
+    from smartline import Route, geometry as geo
+    scene, tool, done = make()                                   # one box at (100,100)-(200,200)
+    guide = QtWidgets.QGraphicsPathItem()
+    guide._smartline_route = Route.from_points([(0, 300), (300, 300), (300, 500), (600, 500)])
+    messy = QtWidgets.QGraphicsPathItem()
+    messy._smartline_route = Route.from_points([(0, 330), (150, 330), (150, 338), (260, 338), (260, 480),
+                                                (263, 480), (263, 420), (280, 420), (280, 540), (600, 540)])
+    for it in (guide, messy):
+        scene.addItem(it)
+    scene._keep += [guide, messy]
+    batches = []
+    tool.routesRerouted.connect(batches.append)
+
+    (item, old, new), = tool.unkink(messy)
+    assert item is messy and geo.bends(new.flatten()) < geo.bends(old.flatten())
+    assert new.start == old.start and new.end == old.end and tool.unkink(messy) == []
+
+    (item, old, new), = tool.follow_bus(messy)                   # guide found automatically
+    a = new.anchors()
+    assert (288, 312) in a and (288, 512) in a                   # parallel to the guide, one pitch out
+    assert new.start == (0, 330) and new.end == (600, 540) and len(batches) == 2
+    assert tool.follow_bus(messy, guide=guide) == []             # explicit guide; already following -> no-op

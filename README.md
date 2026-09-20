@@ -137,6 +137,32 @@ Headless: `smartline.reroute.repair(route, rect, ctx, lookup)`, `hits`, `hit_seg
 It deliberately does **not** move line ends that are attached to the shape - keeping a wire
 glued to a port is connection tracking, which belongs to the application's model.
 
+## Tidying a line: un-kink and follow-bus
+
+![tidy](docs/tidy.png)
+
+```python
+tool.unkink(item)                 # -> [(item, old, new)]   (empty if the line was clean)
+tool.follow_bus(item)             # follow the line it runs closest to;  follow_bus(item, guide=other)
+```
+
+**Un-kink.** A kink is three changes of direction within `tool.kink_length` (40 px). The two
+bends that are closest together are the ends of one short section, so that section is
+collapsed: one of the runs it joins is slid sideways onto the other, which removes both
+bends - a short jog becomes a straight run, a hairpin or spur folds onto itself and vanishes.
+Shortest sections go first, repeatedly, until none is left. A move is refused if it would
+shift a line end, cut further into a shape's clearance, or slide the run onto another line,
+so a step that exists *because* of a shape survives. Free-angle lines drop the kink's
+vertices instead. `reroute_around` un-kinks its results automatically (`tool.tidy_reroutes`).
+
+**Follow bus.** The guide is the other line this one is closest to *on average over its whole
+length* (`tidy.nearest_route`), so a line that merely starts near yours does not win. The
+line keeps its own end points and is re-routed as a bus member of the guide: parallel at
+`bus_pitch`, on the side it already mostly runs, in the first lane no other line occupies,
+around shapes, then un-kinked. Its provenance becomes `bus`, so later re-routes keep it a bus.
+
+Headless: `smartline.tidy.unkink(route, ctx, max_jog, others)`, `kinks`, `nearest_route`, `follow`.
+
 ## The framework: one contract, three extension points
 
 ```
@@ -267,6 +293,7 @@ src/smartline/
   registry.py   register / create / default_routers / plugins        (pure Python)
   qt_compat.py  binding shim
   edit.py       Route -> Route editing operations, handles, hit-testing   (pure Python)
+  tidy.py       un-kink a line; make it follow another as a bus member                   (pure Python)
   reroute.py    repair a Route around a shape using each leg's original method    (pure Python)
   tool.py       SmartLineTool (draw, reroute_around), route_to_path, keymap
   editor.py     RouteEditor: handles overlay, drag / insert / delete / convert

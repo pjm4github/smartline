@@ -37,7 +37,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Union
 
 from . import geometry as g
 from .qt_compat import Qt, QtCore, QtGui, QtWidgets, Signal, enum
-from . import registry, reroute as _reroute
+from . import registry, reroute as _reroute, tidy as _tidy
 from .registry import default_routers
 from .route import Route, concat
 from .routers import RouteContext, Router
@@ -177,6 +177,8 @@ class SmartLineTool(QtCore.QObject):
                                       enum(Qt, "PenStyle", "DashLine"))
         self.preview_pen.setCosmetic(True)
         self.wire_spacing = 10.0        # re-routing: distance kept between parallel lines (0 = off)
+        self.kink_length = 40.0         # a section shorter than this, between two bends, is a kink
+        self.tidy_reroutes = True       # un-kink lines automatically after reroute_around()
         self.bus_pitch = 12.0           # spacing between bus members
         self.bus_capture = 60.0         # auto-pick radius for the guide net
         self.guide_pen = QtGui.QPen(QtGui.QColor(255, 170, 0, 140), 6.0)
@@ -391,6 +393,8 @@ class SmartLineTool(QtCore.QObject):
                                bus_pitch=self.bus_pitch, bus_capture=self.bus_capture,
                                wire_spacing=self.wire_spacing)
             new = _reroute.repair(route, rect, ctx, lookup=self.router_named, others=others)
+            if new is not None and self.tidy_reroutes:
+                new = _tidy.unkink(new, ctx, self.kink_length, others) or new
             if new is not None and new.to_svg(4) != route.to_svg(4):
                 self.set_item_route(item, new)
                 latest[id(item)] = new
@@ -398,6 +402,62 @@ class SmartLineTool(QtCore.QObject):
         if changes:
             self.routesRerouted.emit(changes)
         return changes
+
+    def _scene_context(self, item):
+        """``(RouteContext, other lines' polylines)`` as seen by connector *item*."""
+        self.refresh_obstacles()
+        others = [r.flatten() for it, r in self.wires() if it is not item]
+        ctx = RouteContext(obstacles=list(self._obstacles), clearance=self.clearance,
+                           bend_penalty=self.bend_penalty, guides=[g.simplify(o) for o in others],
+                           bus_pitch=self.bus_pitch, bus_capture=self.bus_capture,
+                           wire_spacing=self.wire_spacing)
+        return ctx, others
+
+    def _commit_change(self, item, old: Route, new: Optional[Route]) -> List:
+        if new is None or new.to_svg(4) == old.to_svg(4):
+            return []
+        self.set_item_route(item, new)
+        changes = [(item, old, new)]
+        self.routesRerouted.emit(changes)
+        return changes
+
+    def unkink(self, item, max_jog: Optional[float] = None) -> List:
+        """Remove kinks from connector *item*: wherever the line changes direction
+        three times within ``kink_length``, the short section in the middle is
+        collapsed, which removes its two bends (spurs and hairpins vanish).  Line
+        ends never move, shapes keep their clearance and the line is never slid
+        onto another one.  Returns / emits ``[(item, old, new)]`` (empty if clean).
+        """
+        route = self.route_of(item)
+        if route is None:
+            return []
+        ctx, others = self._scene_context(item)
+        return self._commit_change(item, route,
+                                   _tidy.unkink(route, ctx, max_jog or self.kink_length, others))
+
+    def follow_bus(self, item, guide=None) -> List:
+        """Re-route connector *item* as a bus member of another line.
+
+        *guide* is the connector to follow; by default the line *item* already
+        runs closest to over its whole length (not just at one end).  The line
+        keeps its own end points, runs parallel to the guide at ``bus_pitch`` on
+        the side it already favours - in the first lane no other line occupies -
+        goes around shapes, and is un-kinked.  Returns / emits ``[(item, old, new)]``.
+        """
+        route = self.route_of(item)
+        if route is None:
+            return []
+        ctx, others = self._scene_context(item)
+        pairs = [(it, r) for it, r in self.wires() if it is not item]
+        if guide is not None:
+            guide_route = self.route_of(guide)
+        else:
+            idx = _tidy.nearest_route(route, [r.flatten() for _it, r in pairs])
+            guide_route = pairs[idx][1] if idx is not None else None
+        if guide_route is None:
+            return []
+        new = _tidy.follow(route, guide_route.flatten(), ctx, others, max_jog=self.kink_length)
+        return self._commit_change(item, route, new)
 
     def reroute_colliding(self) -> List:
         """``reroute_around`` for every obstacle in the scene - a global clean-up."""

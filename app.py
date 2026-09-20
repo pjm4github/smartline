@@ -17,6 +17,8 @@ Select-Edit mode - click a wire to edit it (RouteEditor); drag shapes; Delete
     C / L            section under the cursor -> cubic / line
     Shift / Alt / Ctrl while dragging: free move / break tangent / mirror tangent
     R                re-route every line that overlaps the selected shape(s)  (also automatic on drop)
+    K                un-kink the selected line(s): collapse short jogs, hairpins and spurs
+    B                make the selected line follow the line it runs closest to, as a bus member
     Ctrl+Z           undo the last edit / re-route
     wheel            zoom            middle-drag / Select-mode drag on empty space: pan
 While drawing  (same keys as the library's DEFAULT_KEYMAP)
@@ -345,6 +347,7 @@ class Bench(QMainWindow):
         form.addRow("Clearance", self._spin(0, 80, t.clearance, 2, self._set("clearance")))
         form.addRow("Bend penalty", self._spin(0, 400, t.bend_penalty, 10, self._set("bend_penalty")))
         form.addRow("Line spacing", self._spin(0, 60, t.wire_spacing, 2, self._set("wire_spacing")))
+        form.addRow("Kink length", self._spin(0, 200, t.kink_length, 5, self._set("kink_length")))
         form.addRow("Bus pitch", self._spin(4, 80, t.bus_pitch, 2, self._set("bus_pitch")))
         form.addRow("Bus capture", self._spin(10, 400, t.bus_capture, 10, self._set("bus_capture")))
         form.addRow("Grid snap", self._spin(0, 100, t.grid, 5, self._set_grid))
@@ -361,6 +364,8 @@ class Bench(QMainWindow):
         form.addRow(self.auto_reroute)
         for text, slot in (("Flip posture  (Space)", t.toggle_posture),
                            ("Re-route around selected shapes  (R)", self._reroute_selected),
+                           ("Un-kink selected lines  (K)", self._unkink_selected),
+                           ("Selected line follows nearest bus  (B)", self._follow_selected),
                            ("Add shape", self._add_node_at_center),
                            ("Clear wires", self._clear_wires),
                            ("Reset scene", self._populate)):
@@ -407,6 +412,12 @@ class Bench(QMainWindow):
         rr.setShortcut(QKeySequence("R"))
         rr.triggered.connect(self._reroute_selected)
         bar.addAction(rr)
+        for text, keys, slot in (("Un-kink", "K", self._unkink_selected),
+                                 ("Follow bus", "B", self._follow_selected)):
+            act = QAction(text, self)
+            act.setShortcut(QKeySequence(keys))
+            act.triggered.connect(slot)
+            bar.addAction(act)
         fit = QAction("Fit", self)
         fit.setShortcut(QKeySequence("F"))
         fit.triggered.connect(lambda: self.view.fitInView(self.scene.itemsBoundingRect().adjusted(-40, -40, 40, 40),
@@ -497,6 +508,26 @@ class Bench(QMainWindow):
         if self.auto_reroute.isChecked():
             self.tool.reroute_around(node)
 
+    def _selected_wires(self):
+        wires = [it for it in self.scene.selectedItems() if isinstance(it, Wire)]
+        if not wires:
+            self._status("select a line first  (E, then click it)")
+        return wires
+
+    def _unkink_selected(self):
+        for w in self._selected_wires():
+            old = self.tool.route_of(w)
+            if not self.tool.unkink(w):
+                self._status("no kinks shorter than the kink length in that line")
+            else:
+                new = self.tool.route_of(w)
+                self._status(f"un-kinked: {g.bends(old.flatten())} -> {g.bends(new.flatten())} direction changes")
+
+    def _follow_selected(self):
+        for w in self._selected_wires():
+            if not self.tool.follow_bus(w):
+                self._status("no other line to follow (or it already follows it)")
+
     def _reroute_selected(self):
         shapes = [it for it in self.scene.selectedItems() if isinstance(it, Node)]
         if not shapes:
@@ -512,10 +543,11 @@ class Bench(QMainWindow):
             methods = sorted({str(l["router"]) for l in old.legs()})
             flag = ("  UNRESOLVED" if new.meta.get("unresolved") else "") + \
                    (f"  SHARES {new.meta['overlaps']} px OF TRACK" if new.meta.get("overlaps") else "")
-            self.log.appendPlainText(f"[re-route as {'+'.join(methods)}]{flag}  {new.to_svg(1)}")
+            self.log.appendPlainText(f"[{'+'.join(methods)} -> {new.legs()[0]['router']}, "
+                                     f"{g.bends(old.flatten())} -> {g.bends(new.flatten())} bends]{flag}  {new.to_svg(1)}")
         self.editor.refresh()
         self.scene.update()
-        self._status(f"re-routed {len(changes)} line(s)   -   Ctrl+Z to undo")
+        self._status(f"changed {len(changes)} line(s)   -   Ctrl+Z to undo")
 
     def _undo_edit(self):
         while self._undo:
@@ -581,6 +613,15 @@ class Bench(QMainWindow):
                       if a is not b and a != b), default=0.0)
         print(f"smoke: worst shared track after re-route = {shared:.1f} px")
         print(f"smoke: re-routed {len(changes)} lines ({len(unresolved)} unresolved), undo ok")
+        # tidy: un-kink and follow-bus through the public tool API
+        kinky = self._make_wire(sl.Route.from_points([(40, 700), (200, 700), (200, 708), (420, 708),
+                                                      (420, 760), (423, 760), (423, 708), (600, 708)]))
+        self.scene.addItem(kinky)
+        kinky._smartline_route = sl.Route.from_points(
+            [(40, 700), (200, 700), (200, 708), (420, 708), (420, 760), (423, 760), (423, 708), (600, 708)])
+        assert self.tool.unkink(kinky) and g.bends(self.tool.route_of(kinky).flatten()) <= 1
+        assert self.tool.follow_bus(kinky) is not None
+        print("smoke: unkink + follow_bus ok")
         print(f"smoke ok: {len(wires)} wires, modes = {[r.name for r in self.tool.routers]}")
 
 

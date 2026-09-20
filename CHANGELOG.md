@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0
+- `SmartLineTool.unkink(item)` and `follow_bus(item, guide=None)`; pure-Python `smartline.tidy`
+  (`unkink`, `kinks`, `nearest_route`, `follow`). Re-routes are un-kinked automatically.
+
 ## 0.4.1
 - Re-routing keeps lines off each other: lane search with `wire_spacing`, per-obstacle `margins`,
   cuts at hull entry/exit, `geometry.overlap_length`, taut detours for free-angle routers
