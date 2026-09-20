@@ -355,7 +355,7 @@ class SmartLineTool(QtCore.QObject):
                 out.append((it, r))
         return out
 
-    def reroute_around(self, shape, wires: Optional[Sequence] = None) -> List:
+    def reroute_around(self, shape, wires: Optional[Sequence] = None, refresh: bool = False) -> List:
         """Repair every line that *shape* now overlaps.
 
         *shape* is a QGraphicsItem (its ``sceneBoundingRect()`` is used) or a
@@ -368,6 +368,13 @@ class SmartLineTool(QtCore.QObject):
         ``(item, old_route, new_route)``, ready for an undo command.  A new route
         whose ``meta["unresolved"]`` is set could not be cleared (typically a
         line end lies inside the shape).
+
+        ``refresh=True`` is the "apply my current settings" form: every line that
+        passes *near* the shape - including those that already go around it - is
+        routed again from scratch, leg by leg, with the tool's present
+        ``clearance``, ``wire_spacing``, ``bend_penalty``, ``bus_pitch`` and
+        ``corner_radius``.  (The default only repairs lines the shape overlaps, so
+        a line that is already clear would keep the settings it was routed with.)
 
         Lines are repaired one after another and each sees the ones already
         repaired: a new piece may cross another line but never runs along it -
@@ -383,8 +390,10 @@ class SmartLineTool(QtCore.QObject):
         pairs = list(wires) if wires is not None else self.wires()
         latest = {id(item): route for item, route in pairs}       # repaired lines count at once
         changes = []
+        reach = self.clearance + 8 * self.wire_spacing + self.kink_length
         for item, route in pairs:
-            if not _reroute.hits(route, rect):
+            touched = _reroute.near(route, rect, reach) if refresh else _reroute.hits(route, rect)
+            if not touched:
                 continue
             others = [latest[id(it)].flatten() for it, _r in pairs if it is not item]
             ctx = RouteContext(obstacles=obstacles, clearance=self.clearance,
@@ -392,7 +401,11 @@ class SmartLineTool(QtCore.QObject):
                                guides=[g.simplify(o) for o in others],
                                bus_pitch=self.bus_pitch, bus_capture=self.bus_capture,
                                wire_spacing=self.wire_spacing)
-            new = _reroute.repair(route, rect, ctx, lookup=self.router_named, others=others)
+            if refresh:
+                new = _reroute.refresh(route, ctx, lookup=self.router_named, others=others)
+                self.set_item_route(item, route)       # repaint: corner radius may have changed
+            else:
+                new = _reroute.repair(route, rect, ctx, lookup=self.router_named, others=others)
             if new is not None and self.tidy_reroutes:
                 new = _tidy.unkink(new, ctx, self.kink_length, others) or new
             if new is not None and new.to_svg(4) != route.to_svg(4):
@@ -479,6 +492,31 @@ class SmartLineTool(QtCore.QObject):
         changes = []
         for qrect in self.collect_obstacles():
             changes.extend(self.reroute_around(qrect))
+        return changes
+
+    def refresh_routes(self, items: Optional[Sequence] = None) -> List:
+        """Route lines again from scratch with the tool's current settings - the
+        given connector items, or every line in the scene.  One undoable batch."""
+        self.refresh_obstacles()
+        pairs = self.wires()
+        chosen = [(it, r) for it, r in pairs if items is None or any(it is x for x in items)]
+        latest = {id(item): route for item, route in pairs}
+        changes = []
+        for item, route in chosen:
+            others = [latest[id(it)].flatten() for it, _r in pairs if it is not item]
+            ctx = RouteContext(obstacles=list(self._obstacles), clearance=self.clearance,
+                               bend_penalty=self.bend_penalty, guides=[g.simplify(o) for o in others],
+                               bus_pitch=self.bus_pitch, bus_capture=self.bus_capture,
+                               wire_spacing=self.wire_spacing)
+            new = _reroute.refresh(route, ctx, lookup=self.router_named, others=others)
+            if self.tidy_reroutes:
+                new = _tidy.unkink(new, ctx, self.kink_length, others) or new
+            self.set_item_route(item, new if new.to_svg(4) != route.to_svg(4) else route)
+            if new.to_svg(4) != route.to_svg(4):
+                latest[id(item)] = new
+                changes.append((item, route, new))
+        if changes:
+            self.routesRerouted.emit(changes)
         return changes
 
     def router_named(self, name: Optional[str]) -> Optional[Router]:

@@ -218,3 +218,88 @@ def repair(route: Route, rect: Rect, ctx: RouteContext,
     if shared > 0:
         current.meta["overlaps"] = round(shared, 1)
     return current
+
+
+# ------------------------------------------------------ re-route with current settings
+
+def near(route: Route, rect: Rect, distance: float) -> bool:
+    """Does *route* pass within *distance* of *rect* (i.e. is it, or should it
+    be, part of the traffic around that shape)?"""
+    return hits(route, g.inflate(rect, distance))
+
+
+def _new_shared_track(flat: Sequence[Pt], others: Sequence[Sequence[Pt]], tol: float,
+                      old: Sequence[Pt]) -> float:
+    """Track shared with *others*, ignoring the run-in and run-out: the first
+    and last sections start at pinned points, so where they stay on the line's
+    previous path their closeness to a neighbour is nothing a new lane can cure -
+    counting it would push every line to the outermost lane."""
+    total = 0.0
+    last = len(flat) - 2
+    for k in range(len(flat) - 1):
+        seg = [flat[k], flat[k + 1]]
+        if k in (0, last) and g.overlap_length(seg, old, 0.5) >= g.dist(*seg) - 1e-6:
+            continue
+        total += sum(g.overlap_length(seg, o, tol) for o in others)
+    return total
+
+
+def refresh(route: Route, ctx: RouteContext, lookup: RouterLookup = _default_lookup,
+            others: Sequence[Sequence[Pt]] = (), max_lanes: int = 8) -> Route:
+    """Route the whole line again, leg by leg, with the settings in *ctx*.
+
+    :func:`repair` only touches lines that a shape overlaps, so a line that
+    already goes around a shape keeps the clearance, spacing and bend penalty it
+    was routed with.  ``refresh`` is the "apply my new settings" operation: every
+    drawn leg is re-run between its own end points with the method, posture and
+    flip it was drawn with, avoiding the shapes and keeping off *others*.
+    Manual edits inside a leg are replaced; the leg end points are kept.
+    """
+    a = route.anchors()
+    old_flat = route.flatten()
+    spacing = ctx.wire_spacing if others else 0.0
+    tol = spacing * 0.5
+    rects = [tuple(o) for o in ctx.obstacles]
+    pieces: List[Route] = []
+    first = 0
+    while first < len(a) - 1:
+        lo, hi = leg_span(route, first + 1)
+        hi = max(hi, first + 1)
+        leg = leg_at(route, first + 1)
+        router = (lookup(leg.get("router")) or HugRouter(OrthoRouter())).avoiding()
+        best = None
+        for lane in range(max_lanes + 1 if spacing > 0 else 1):
+            margins = {r: lane * spacing for r in rects} if lane else {}
+            for flip in (bool(leg.get("flip")), not leg.get("flip")):
+                c = replace(ctx, flip=flip, auto_posture=leg.get("posture"), prev_heading=None,
+                            margins=margins)
+                piece = Route.coerce(router.shape(a[first], a[hi], c))
+                if router.free_angle and piece.is_polyline:
+                    piece = Route.from_points(g.shortcut(piece.flatten(), c.hulls(a[first], a[hi])))
+                flat = piece.flatten()
+                live = [r for r in rects if not any(g.contains(g.inflate(r, ctx.clearance), p)
+                                                    for p in (a[first], a[hi]))]
+                blocked = any(g.segment_hits(flat[k], flat[k + 1], r)
+                              for k in range(len(flat) - 1) for r in live)
+                along = _new_shared_track(flat, others, tol, old_flat) if spacing > 0 else 0.0
+                crowded = along > max(spacing, 4.0)
+                score = (blocked, crowded, lane, flip != bool(leg.get("flip")), g.length(flat))
+                if best is None or score < best[0]:
+                    best = (score, piece, flip)
+                if not blocked and not crowded:
+                    break
+            if best[0][0] is False and best[0][1] is False:
+                break
+        piece = best[1]
+        if g.dist(piece.end, a[hi]) > 1e-6:
+            piece = Route.from_points(piece.flatten() + [a[hi]])
+        piece.meta = {"router": leg.get("router"), "flip": best[2], "posture": leg.get("posture")}
+        pieces.append(piece)
+        first = hi
+    out = pieces[0]
+    for p in pieces[1:]:
+        out = out.joined(p)
+    out = edit.normalize(out)
+    keep = {k: v for k, v in route.meta.items() if k not in ("legs", "unresolved", "overlaps")}
+    out.meta = {**keep, **{k: v for k, v in out.meta.items() if k in ("legs", "router", "flip", "posture")}}
+    return out

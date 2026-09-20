@@ -18,7 +18,9 @@ Select-Edit mode - click a wire to edit it (RouteEditor); drag shapes; Delete
                      press Delete again to keep eating the line back from that end
     C / L            section under the cursor -> cubic / line
     Shift / Alt / Ctrl while dragging: free move / break tangent / mirror tangent
-    R                re-route every line that overlaps the selected shape(s)  (also automatic on drop)
+    R                re-route with the CURRENT settings: lines near the selected shape(s), or the
+                     selected line(s), or every line if nothing is selected  (dropping a shape
+                     only repairs the lines it overlaps)
     K                un-kink the selected line(s): collapse short jogs, hairpins and spurs
     B                make the selected line follow the line it runs closest to, as a bus member
     Ctrl+Z           undo the last edit / re-route
@@ -366,7 +368,7 @@ class Bench(QMainWindow):
         self.auto_reroute.setChecked(True)
         form.addRow(self.auto_reroute)
         for text, slot in (("Flip posture  (Space)", t.toggle_posture),
-                           ("Re-route around selected shapes  (R)", self._reroute_selected),
+                           ("Re-route with current settings  (R)", self._reroute_selected),
                            ("Un-kink selected lines  (K)", self._unkink_selected),
                            ("Selected line follows nearest bus  (B)", self._follow_selected),
                            ("Add shape", self._add_node_at_center),
@@ -431,6 +433,7 @@ class Bench(QMainWindow):
     def _set(self, attr):
         def apply(v):
             setattr(self.tool, attr, float(v))
+            self.editor.corner_radius = self.tool.corner_radius
             self.tool.refresh_obstacles()
             self.tool._reroute()                 # live preview follows the knob
             self.scene.update()
@@ -533,13 +536,20 @@ class Bench(QMainWindow):
                 self._status("no other line to follow (or it already follows it)")
 
     def _reroute_selected(self):
-        shapes = [it for it in self.scene.selectedItems() if isinstance(it, Node)]
-        if not shapes:
-            self._status("select one or more shapes first")
-            return
-        total = sum(len(self.tool.reroute_around(n)) for n in shapes)
+        """The Re-route command applies the *current* settings: lines near the selected
+        shapes (or the selected lines, or - with nothing selected - every line) are routed
+        again from scratch.  Dropping a shape only does the cheap local repair."""
+        sel = self.scene.selectedItems()
+        shapes = [it for it in sel if isinstance(it, Node)]
+        wires = [it for it in sel if isinstance(it, Wire)]
+        if shapes:
+            total = sum(len(self.tool.reroute_around(n, refresh=True)) for n in shapes)
+        else:
+            total = len(self.tool.refresh_routes(wires or None))
+        self.editor.refresh()
+        self.scene.update()
         if not total:
-            self._status("no line overlaps the selected shape(s)")
+            self._status("routes already match the current settings")
 
     def _on_rerouted(self, changes):
         self._undo.append([(item, old) for item, old, _new in changes])
@@ -645,6 +655,23 @@ class Bench(QMainWindow):
         assert self.editor.trim_end() and [x.cmd for x in self.editor.route().segs] == ["L", "C", "L"]
         assert self.tool.trim_end(rounded, "start")
         print("smoke: trim_end ok")
+        # settings must reach existing lines through the Re-route command
+        self.scene.clearSelection()
+        probe = self._make_wire(sl.Route.from_points([(1100, 40), (1300, 40)]))
+        self.scene.addItem(probe)
+        self.tool.set_mode("hug")
+        g_node = next(n for n in self._nodes if n.label == "G")
+        self.tool.refresh_obstacles()
+        r0 = self.tool.router.shape((1080.0, 170.0), (1330.0, 170.0), self.tool._context())
+        r0.meta.update(router="hug", flip=False, posture=None)
+        self.tool.set_item_route(probe, r0)
+        before = min(p[1] for p in r0.anchors())
+        self.tool.clearance = self.tool.clearance + 20
+        g_node.setSelected(True)
+        self._reroute_selected()
+        after = min(p[1] for p in self.tool.route_of(probe).anchors())
+        assert before - after >= 19, (before, after)     # at least the extra clearance (maybe a lane more)
+        print(f"smoke: clearance change reached an existing line ({before:.0f} -> {after:.0f})")
         print(f"smoke ok: {len(wires)} wires, modes = {[r.name for r in self.tool.routers]}")
 
 

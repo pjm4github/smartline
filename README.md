@@ -139,6 +139,20 @@ on `R`). For each line that passes through the shape:
   cannot be cleared (an end lies inside the shape) the best attempt is returned with
   `route.meta["unresolved"] = True`.
 
+**Applying changed settings.** A repair only touches lines a shape overlaps, so a line that is
+already clear keeps the clearance, spacing and bend penalty it was routed with. To make
+existing lines pick up the tool's *current* settings use the refresh forms, which route each
+drawn leg again from scratch between its own end points (method, posture and flip preserved;
+manual edits inside a leg are replaced):
+
+```python
+tool.reroute_around(shape, refresh=True)   # every line passing near the shape
+tool.refresh_routes([item, ...])           # these lines;  refresh_routes() = all of them
+```
+
+Both also repaint unchanged lines, so a new `corner_radius` shows immediately. The bench's
+Re-route command uses these; dropping a shape uses the cheap local repair.
+
 Hooks mirror the editor: `tool.route_of(item)` and `tool.apply_route(item, route)`.
 Headless: `smartline.reroute.repair(route, rect, ctx, lookup)`, `hits`, `hit_segments`.
 

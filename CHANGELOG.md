@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+- Fix: re-routing ignored changed settings for lines that were already clear of the shape.
+  `reroute_around(shape, refresh=True)`, `refresh_routes(items)`, pure `reroute.refresh` / `near`.
+
 ## 0.5.1
 - Trim a line from an end: `edit.end_span` / `edit.trim_end`, `RouteEditor.select_end` / `trim_end`
   (click an end, Delete; highlights the section and its attached curve), `removalRequested`,

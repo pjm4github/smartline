@@ -143,3 +143,54 @@ def test_neighbouring_shape_does_not_force_lines_together():
     lines = [drawn("ortho", (0, 160 + 12 * k), (600, 160 + 12 * k)) for k in range(3)]
     fixed = _repair_all(lines, rect, [rect, neighbour])
     assert all(clear(r, rect) for r in fixed) and _shared_track(fixed) < 1e-6
+
+
+# ------------------------------------------------ changed settings must reach existing lines
+
+def _hug_line(clearance):
+    return drawn("hug", (0, 150), (300, 150), obstacles=[BOX], clearance=clearance)
+
+
+def test_repair_alone_ignores_a_line_that_is_already_clear():
+    assert reroute.repair(_hug_line(10), BOX, RouteContext(obstacles=[BOX], clearance=30)) is None
+
+
+def test_refresh_applies_new_clearance_both_ways():
+    wide = reroute.refresh(_hug_line(10), RouteContext(obstacles=[BOX], clearance=30))
+    assert {p[1] for p in wide.anchors()} >= {150.0, 70.0}            # 100 - 30
+    tight = reroute.refresh(wide, RouteContext(obstacles=[BOX], clearance=4))
+    assert {p[1] for p in tight.anchors()} >= {150.0, 96.0}
+    assert tight.start == (0, 150) and tight.end == (300, 150) and tight.legs()[0]["router"] == "hug"
+
+
+def test_refresh_applies_new_wire_spacing():
+    a = drawn("hug", (0, 130), (300, 130), obstacles=[BOX], clearance=10)
+    b = drawn("hug", (0, 140), (300, 140), obstacles=[BOX], clearance=10)
+    for spacing, lane_y in ((10, 80.0), (25, 65.0)):
+        ctx = RouteContext(obstacles=[BOX], clearance=10, wire_spacing=spacing)
+        fixed_a = reroute.refresh(a, ctx, others=[b.flatten()])
+        fixed_b = reroute.refresh(b, ctx, others=[fixed_a.flatten()])
+        ys = {p[1] for p in fixed_a.anchors()} | {p[1] for p in fixed_b.anchors()}
+        assert {90.0, lane_y} <= ys, (spacing, fixed_a.to_svg(0), fixed_b.to_svg(0))
+        assert g.overlap_length(fixed_a.flatten(), fixed_b.flatten(), 4) == 0      # run-ins are pinned 10 px apart
+
+
+def test_refresh_applies_new_bend_penalty_and_bus_pitch():
+    boxes = [(100, 0, 140, 400), (200, 100, 240, 600)]
+    line = drawn("avoid", (0, 450), (340, 50), obstacles=boxes, clearance=10, bend_penalty=0)
+    cheap = reroute.refresh(line, RouteContext(obstacles=boxes, clearance=10, bend_penalty=0))
+    dear = reroute.refresh(line, RouteContext(obstacles=boxes, clearance=10, bend_penalty=2000))
+    assert g.bends(dear.flatten()) <= g.bends(cheap.flatten())
+    guide = [(0, 300), (400, 300)]
+    member = sl.create("bus").shape((0, 312), (400, 312), RouteContext(guides=[guide], bus_pitch=12))
+    member.meta.update(router="bus", flip=False, posture=None)
+    moved = reroute.refresh(Route.from_points([(0, 312), (400, 312)], router="bus"),
+                            RouteContext(guides=[guide], bus_pitch=20, bus_capture=60), others=[guide])
+    assert any(abs(p[1] - 320) < 1e-6 for p in moved.anchors())        # lane is now 20 px out
+
+
+def test_refresh_keeps_leg_boundaries_and_methods():
+    line = drawn("straight", (0, 40), (150, 60)).joined(drawn("ortho", (150, 60), (150, 300)))
+    out = reroute.refresh(line, CTX)
+    assert (150, 60) in out.anchors() and [l["router"] for l in out.legs()] == ["straight", "ortho"]
+    assert clear(out) and out.end == (150, 300)

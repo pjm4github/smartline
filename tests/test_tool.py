@@ -210,3 +210,32 @@ def test_unkink_and_follow_bus_on_selected_lines():
     assert (288, 312) in a and (288, 512) in a                   # parallel to the guide, one pitch out
     assert new.start == (0, 330) and new.end == (600, 540) and len(batches) == 2
     assert tool.follow_bus(messy, guide=guide) == []             # explicit guide; already following -> no-op
+
+
+def test_reroute_with_refresh_picks_up_every_changed_setting():
+    scene, tool, done = make()                                   # box at (100,100)-(200,200), 1 px pen
+    applied = []
+    real = tool.set_item_route
+    tool.apply_route = lambda item, route: (applied.append(route), setattr(item, "_smartline_route", route))
+    tool.clearance = 10
+    tool.set_mode("hug")
+    send(tool, T("GraphicsSceneMousePress"), (0, 150))
+    send(tool, T("GraphicsSceneMouseMove"), (300, 150))
+    key(tool, "Key_Return")
+    (wire, route), = tool.wires()
+    top = lambda r: min(p[1] for p in r.anchors())               # noqa: E731
+    box = scene._keep[0]
+    assert abs(top(route) - 90) <= 1
+
+    tool.clearance = 30
+    assert tool.reroute_around(box) == []                        # default: the line is clear, untouched
+    (item, old, new), = tool.reroute_around(box, refresh=True)
+    assert abs(top(new) - 70) <= 1 and tool.route_of(wire) is new
+
+    tool.clearance = 5
+    (item, old, new), = tool.refresh_routes([wire])
+    assert abs(top(new) - 95) <= 1
+
+    applied.clear()
+    tool.corner_radius = 20                                      # geometry unchanged, drawing changed
+    assert tool.reroute_around(box, refresh=True) == [] and len(applied) == 1
