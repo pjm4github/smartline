@@ -44,6 +44,7 @@ def make():
         from smartline.qt_compat import QtGui
         box.setBrush(QtGui.QBrush(QtGui.QColor(200, 200, 200)))
     scene.addItem(box)
+    scene._keep = [box]            # keep Python refs alive for the whole test (binding-agnostic)
     tool = SmartLineTool(scene)
     tool.set_active(True)
     done = []
@@ -66,7 +67,7 @@ def xy(pts):
 def test_ortho_stroke_with_flip_undo_finish():
     scene, tool, done = make()
     tool.set_mode("ortho")
-    n_items = len(scene.items())
+    before = list(scene.items())
     assert send(tool, T("GraphicsSceneMousePress"), (0, 0)) is True
     send(tool, T("GraphicsSceneMouseMove"), (60, 10))          # latches HV
     send(tool, T("GraphicsSceneMouseMove"), (60, 80))
@@ -83,7 +84,10 @@ def test_ortho_stroke_with_flip_undo_finish():
     key(tool, "Key_Return")
     assert xy(done[0]) == [(0, 0), (0, 80), (60, 80), (60, 200)]
     assert not tool.is_drawing()
-    assert len(scene.items()) == n_items + 1                     # path item added
+    added = [it for it in scene.items() if it not in before]
+    assert len(added) == 1 and isinstance(added[0], QtWidgets.QGraphicsPathItem), (
+        [type(i).__name__ for i in before], [type(i).__name__ for i in scene.items()])
+    assert added[0] in tool._wire_items                           # bus mode can follow it
 
 
 def test_hug_mode_sees_scene_obstacles():
@@ -92,8 +96,9 @@ def test_hug_mode_sees_scene_obstacles():
     tool.clearance = 10
     send(tool, T("GraphicsSceneMousePress"), (0, 150))
     send(tool, T("GraphicsSceneMouseMove"), (300, 150))
-    ys = {p[1] for p in tool._live}
-    assert len(tool._live) > 2 and (90 in ys or 210 in ys), tool._live
+    # hull = sceneBoundingRect (includes half the shape's pen width) + clearance
+    ys = [p[1] for p in tool._live]
+    assert len(tool._live) > 2 and any(abs(y - 90) <= 1 or abs(y - 210) <= 1 for y in ys), tool._live
 
 
 def test_modes_cycle_escape_and_right_click():
