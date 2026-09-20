@@ -22,7 +22,7 @@ from . import edit
 from . import geometry as g
 from .geometry import Pt, Rect
 from .route import Route, _bezier
-from .ports import obstacle_hits, rect_exit_finder, shape_with_exits
+from .ports import obstacle_intrusion, rect_exit_finder, shape_with_exits
 from .routers import HugRouter, OrthoRouter, RouteContext, Router
 
 RouterLookup = Callable[[Optional[str]], Optional[Router]]
@@ -179,7 +179,7 @@ def _search(router: Router, leg: dict, ctx: RouteContext, others: Sequence[Seque
                 if router.free_angle and piece.is_polyline and not (exit_a or exit_b):
                     piece = Route.from_points(g.shortcut(piece.flatten(), c.hulls(p, q)))
                 flat = piece.flatten()
-                hits_n = obstacle_hits(flat, rects, exit_a, exit_b)
+                hits_n = round(obstacle_intrusion(flat, rects, exit_a, exit_b), 3)
                 cross_n = sum(g.crossings(flat, o) for o in others)
                 if spacing > 0:
                     along = (_new_shared_track(flat, others, tol, old_flat) if old_flat is not None

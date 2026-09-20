@@ -11,7 +11,7 @@ from .routers import (AvoidRouter, BusRouter, CubicRouter, HugRouter,
                       OctilinearRouter, OrthoRouter, RouteContext, Router,
                       StraightRouter, blend_corners, catmull_rom)
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 __all__ = ["AvoidRouter", "BusRouter", "CubicRouter", "HugRouter", "OctilinearRouter",
            "OrthoRouter", "RouteContext", "Router", "StraightRouter", "blend_corners", "catmull_rom",
            "Route", "Seg", "edit", "ports", "reroute", "tidy", "DEFAULT_MODES", "available", "create", "default_routers",

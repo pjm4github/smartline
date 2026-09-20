@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+- Fix: `unkink` could drag a line straight through a shape. Intrusion into shapes and clearance
+  zones is now measured as *length* (`geometry.length_inside`), not as a count of offending
+  segments, which merging segments could lower. Re-route scoring uses the same measure.
+
 ## 0.7.0
 - Connections: `tool.shape_moved(shape, record=True)`, `attach`, `link`, `links`, `linked_wires`.
   Lines attached to a moved shape keep their port and are re-routed by the usual rules; other

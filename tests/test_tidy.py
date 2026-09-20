@@ -88,3 +88,24 @@ def test_follow_takes_the_next_lane_if_the_first_is_taken():
     out = tidy.follow(mine, GUIDE, RouteContext(bus_pitch=12, wire_spacing=10), others=[GUIDE, member1])
     assert (376, 124) in out.anchors()                           # lane 2
     assert g.overlap_length(out.flatten(), member1, 5) == 0
+
+
+def test_unkink_never_routes_through_a_shape_even_when_kinks_sit_in_its_clearance_zone():
+    # regression: sections inside D's clearance zone were *counted*; collapsing them merged
+    # several into one long section straight through D and the count went down
+    D = (440, 430, 630, 550)
+    line = Route.from_points([(355, 250), (355, 525), (432, 525), (432, 540), (436, 540), (436, 556),
+                              (640, 556), (640, 520), (700, 520), (700, 450), (652, 450), (652, 408),
+                              (420, 408), (420, 475), (402, 475), (402, 250)])
+    ctx = RouteContext(obstacles=[D], clearance=8, wire_spacing=10)
+    assert not reroute.hits(line, D)
+    out = tidy.unkink(line, ctx, 40) or line
+    assert not reroute.hits(out, D), out.to_svg(0)
+    before = sum(g.length_inside(line.flatten(), g.inflate(D, 7.99)) for _ in [0])
+    after = sum(g.length_inside(out.flatten(), g.inflate(D, 7.99)) for _ in [0])
+    assert after <= before + 1e-6 and out.start == line.start and out.end == line.end
+
+
+def test_length_inside():
+    assert g.length_inside([(0, 50), (200, 50)], (50, 0, 150, 100)) == 100
+    assert g.length_inside([(0, 0), (200, 0)], (50, 0, 150, 100)) == 0           # along the edge: outside

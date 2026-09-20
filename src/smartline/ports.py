@@ -82,6 +82,21 @@ def obstacle_hits(flat: Sequence[Pt], rects: Sequence[Rect],
     return total
 
 
+def obstacle_intrusion(flat: Sequence[Pt], rects: Sequence[Rect],
+                       exit_a: Optional[Exit] = None, exit_b: Optional[Exit] = None) -> float:
+    """Length of the line that lies inside shapes - what a re-route minimises first.
+    A length, not a count: one long run through a shape must never beat two grazes."""
+    last = len(flat) - 2
+    total = 0.0
+    for k in range(len(flat) - 1):
+        for r in rects:
+            r = tuple(r)
+            if (k == 0 and exit_a and r == tuple(exit_a[2])) or (k == last and exit_b and r == tuple(exit_b[2])):
+                continue
+            total += g.length_inside([flat[k], flat[k + 1]], r)
+    return total
+
+
 def stubs_ok(flat: Sequence[Pt], clearance: float,
              exit_a: Optional[Exit] = None, exit_b: Optional[Exit] = None) -> bool:
     """Do the attached ends still leave squarely and run straight for *clearance*?"""

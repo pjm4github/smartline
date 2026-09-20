@@ -9,8 +9,9 @@ that are closest together are the ends of one short section, so removing a kink
 means collapsing that section: one of the two runs it joins is slid sideways
 until it lines up with the other, which deletes both bends at once (a hairpin
 collapses onto itself and disappears entirely).  A move is only accepted if the
-line ends stay put, it does not cut into a shape's clearance more than before,
-and it does not land on top of another line.
+line ends stay put, no more of the line ends up inside a shape or its clearance
+zone than before (measured as length, so merging segments cannot hide it), it
+adds no crossing, keeps port stubs square, and does not land on another line.
 """
 from __future__ import annotations
 
@@ -25,9 +26,24 @@ from .ports import rect_exit_finder, shape_with_exits, stubs_ok
 from .routers import BusRouter, RouteContext
 
 
-def _violations(pts: Sequence[Pt], ctx: RouteContext) -> int:
-    hulls = [g.inflate(r, ctx.clearance - 0.01) for r in ctx.obstacles]
-    return sum(1 for i in range(len(pts) - 1) for h in hulls if g.segment_hits(pts[i], pts[i + 1], h))
+def _intrusion(pts: Sequence[Pt], ctx: RouteContext, exit_a=None, exit_b=None) -> Tuple[float, float]:
+    """``(length inside shapes, length inside clearance hulls)``.
+
+    Measured as *length*, not as a count of offending segments: collapsing a kink
+    merges segments, so a count can fall while the line is being dragged straight
+    through a shape.  A port stub is not held against the shape it leaves from.
+    """
+    last = len(pts) - 2
+    in_shape = in_hull = 0.0
+    for k in range(len(pts) - 1):
+        seg = [pts[k], pts[k + 1]]
+        for r in ctx.obstacles:
+            r = tuple(r)
+            if (k == 0 and exit_a and r == tuple(exit_a[2])) or (k == last and exit_b and r == tuple(exit_b[2])):
+                continue
+            in_shape += g.length_inside(seg, r)
+            in_hull += g.length_inside(seg, g.inflate(r, ctx.clearance - 0.01))
+    return in_shape, in_hull
 
 
 def _shared(pts: Sequence[Pt], others: Sequence[Sequence[Pt]], tol: float) -> float:
@@ -71,7 +87,8 @@ def unkink(route: Route, ctx: Optional[RouteContext] = None, max_jog: float = 40
             break
         s, _len = todo[0]
         flat = current.flatten()
-        base_bad, base_shared, base_bends = _violations(flat, ctx), _shared(flat, others, tol), g.bends(flat)
+        base_shape, base_hull = _intrusion(flat, ctx, exit_a, exit_b)
+        base_shared, base_bends = _shared(flat, others, tol), g.bends(flat)
         base_cross = sum(g.crossings(flat, o) for o in others)
         had_stubs = stubs_ok(flat, ctx.clearance, exit_a, exit_b)
         options = []
@@ -81,7 +98,12 @@ def unkink(route: Route, ctx: Optional[RouteContext] = None, max_jog: float = 40
                 continue                               # the ends are pinned
             if g.bends(pts) >= base_bends:
                 continue
-            if _violations(pts, ctx) > base_bad or _shared(pts, others, tol) > base_shared + 1.0:
+            in_shape, in_hull = _intrusion(pts, ctx, exit_a, exit_b)
+            if in_shape > base_shape + 1e-6:
+                continue                               # rule 1: never (further) into a shape
+            if in_hull > base_hull + 1e-6:
+                continue                               # nor deeper into a clearance zone
+            if _shared(pts, others, tol) > base_shared + 1.0:
                 continue
             if sum(g.crossings(pts, o) for o in others) > base_cross:
                 continue                               # never trade a kink for a crossing

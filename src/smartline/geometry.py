@@ -361,3 +361,14 @@ def port_exit(p: Pt, rects: Sequence[Rect], clearance: float,
         if d <= tol and (best is None or d < best[0]):
             best = (d, stub, n, (l, t, r, b))
     return (best[1], best[2], best[3]) if best else None
+
+
+def length_inside(pts: Sequence[Pt], rect: Rect) -> float:
+    """How much of polyline *pts* lies inside *rect* (open interior).  Unlike a
+    count of offending segments, this cannot be gamed by merging segments."""
+    total = 0.0
+    for i in range(len(pts) - 1):
+        c = clip_segment(pts[i], pts[i + 1], rect)
+        if c:
+            total += (c[1] - c[0]) * dist(pts[i], pts[i + 1])
+    return total
