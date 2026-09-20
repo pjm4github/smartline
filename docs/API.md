@@ -5,15 +5,7 @@ objects that describe **what a line must route around**, and the data object tha
 line** (`Route`). Everything in sections 2-4 is pure Python and works without Qt; only
 sections 1 and 6 need a Qt binding.
 
-```
-                     ┌──────────────────────────── obstacle model ───────────────────────────┐
-  shapes in scene ──►│ Rect list · clearance · margins · port exits · other lines · links    │
-                     └───────────────────────────────┬───────────────────────────────────────┘
-                                                     │ RouteContext
-  start, end ──► Router.route() / Router.shape() ────┴──► Route ──► item (QGraphicsPathItem, yours)
-                                                            │
-                     edit · reroute · tidy  (Route -> Route)┘
-```
+![smartline data flow: scene shapes feed the obstacle model, which reaches a Router as a RouteContext; the Router produces a Route that is stored in an item and transformed by edit, reroute and tidy](api-overview.svg)
 
 Coordinates are scene coordinates throughout. Two plain types are used everywhere:
 

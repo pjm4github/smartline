@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" width="960" height="470" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">smartline data flow</title>
+  <desc id="d">Shapes in the scene become the obstacle model, which is passed as a RouteContext to a Router together with the start and end points. The router produces a Route, which is stored in a connector item and transformed by the edit, reroute and tidy operations.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#465a82"/>
+    </marker>
+    <style>
+      .bg{fill:#ffffff}
+      .box{fill:#eef2fa;stroke:#465a82;stroke-width:1.5}
+      .model{fill:#fff8e6;stroke:#b07b00;stroke-width:1.5}
+      .route{fill:#e8f5ee;stroke:#1f7a4d;stroke-width:2}
+      .ops{fill:#f3ecfb;stroke:#6b3fa0;stroke-width:1.5}
+      .chip{fill:#ffffff;stroke:#b07b00;stroke-width:1}
+      .h{font-size:15px;font-weight:600;fill:#1b2740}
+      .s{font-size:12px;fill:#3a4763}
+      .c{font-size:11.5px;fill:#5a4300}
+      .lbl{font-size:11.5px;font-style:italic;fill:#465a82}
+      .mono{font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace}
+      .line{stroke:#465a82;stroke-width:1.6;fill:none}
+      .dash{stroke:#6b3fa0;stroke-width:1.6;fill:none;stroke-dasharray:5 4}
+      .qt{font-size:10.5px;fill:#7a869e}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="960" height="470" rx="8"/>
+
+  <!-- row 1: scene -> obstacle model -->
+  <rect class="box" x="24" y="40" width="170" height="92" rx="8"/>
+  <text class="h" x="109" y="70" text-anchor="middle">Shapes in the scene</text>
+  <text class="s" x="109" y="92" text-anchor="middle">QGraphicsItems</text>
+  <text class="s mono" x="109" y="112" text-anchor="middle">sceneBoundingRect()</text>
+
+  <rect class="model" x="270" y="24" width="666" height="124" rx="8"/>
+  <text class="h" x="290" y="50">Obstacle model</text>
+  <text class="s" x="412" y="50">- everything a line must route around, follow or respect</text>
+  <g>
+    <rect class="chip" x="290" y="64" width="118" height="30" rx="15"/><text class="c mono" x="349" y="84" text-anchor="middle">Rect list</text>
+    <rect class="chip" x="418" y="64" width="118" height="30" rx="15"/><text class="c mono" x="477" y="84" text-anchor="middle">clearance</text>
+    <rect class="chip" x="546" y="64" width="118" height="30" rx="15"/><text class="c mono" x="605" y="84" text-anchor="middle">margins (lanes)</text>
+    <rect class="chip" x="674" y="64" width="118" height="30" rx="15"/><text class="c mono" x="733" y="84" text-anchor="middle">port exits</text>
+    <rect class="chip" x="802" y="64" width="118" height="30" rx="15"/><text class="c mono" x="861" y="84" text-anchor="middle">wire_spacing</text>
+    <rect class="chip" x="354" y="104" width="150" height="30" rx="15"/><text class="c mono" x="429" y="124" text-anchor="middle">other lines (guides)</text>
+    <rect class="chip" x="514" y="104" width="150" height="30" rx="15"/><text class="c mono" x="589" y="124" text-anchor="middle">avoid_lines</text>
+    <rect class="chip" x="674" y="104" width="182" height="30" rx="15"/><text class="c mono" x="765" y="124" text-anchor="middle">links (connections)</text>
+  </g>
+  <path class="line" d="M194 86 H268" marker-end="url(#arrow)"/>
+
+  <!-- RouteContext hand-off -->
+  <path class="line" d="M603 148 V214" marker-end="url(#arrow)"/>
+  <rect x="613" y="168" width="108" height="22" rx="4" fill="#ffffff"/>
+  <text class="lbl mono" x="617" y="184">RouteContext</text>
+
+  <!-- row 2: start/end -> Router -> Route -> item -->
+  <rect class="box" x="24" y="226" width="170" height="80" rx="8"/>
+  <text class="h" x="109" y="258" text-anchor="middle">start, end</text>
+  <text class="s" x="109" y="280" text-anchor="middle">anchor and cursor / ports</text>
+
+  <rect class="box" x="270" y="216" width="330" height="100" rx="8"/>
+  <text class="h" x="435" y="244" text-anchor="middle">Router</text>
+  <text class="s mono" x="435" y="268" text-anchor="middle">route(start, end, ctx) -&gt; skeleton</text>
+  <text class="s mono" x="435" y="288" text-anchor="middle">shape(start, end, ctx) -&gt; Route</text>
+  <text class="qt" x="435" y="306" text-anchor="middle">straight · ortho · hug · avoid · octilinear · bus · cubic</text>
+
+  <rect class="route" x="672" y="226" width="110" height="80" rx="8"/>
+  <text class="h" x="727" y="258" text-anchor="middle">Route</text>
+  <text class="s" x="727" y="280" text-anchor="middle">L / Q / C segs</text>
+  <text class="s" x="727" y="296" text-anchor="middle">+ meta, legs</text>
+
+  <rect class="box" x="836" y="226" width="100" height="80" rx="8"/>
+  <text class="h" x="886" y="256" text-anchor="middle">Item</text>
+  <text class="s" x="886" y="276" text-anchor="middle">path item</text>
+  <text class="s" x="886" y="292" text-anchor="middle">(or yours)</text>
+
+  <path class="line" d="M194 266 H268" marker-end="url(#arrow)"/>
+  <path class="line" d="M600 266 H670" marker-end="url(#arrow)"/>
+  <path class="line" d="M782 266 H834" marker-end="url(#arrow)"/>
+
+  <!-- row 3: operations loop -->
+  <rect class="ops" x="456" y="372" width="400" height="74" rx="8"/>
+  <text class="h" x="656" y="400" text-anchor="middle">edit · reroute · tidy</text>
+  <text class="s" x="656" y="422" text-anchor="middle">Route -&gt; Route   (move, trim, repair, refresh, un-kink, follow bus)</text>
+  <path class="dash" d="M700 306 V370" marker-end="url(#arrow)"/>
+  <path class="dash" d="M754 372 V308" marker-end="url(#arrow)"/>
+  <text class="lbl" x="620" y="344">transform</text>
+  <text class="lbl" x="764" y="344">new Route</text>
+
+  <!-- Qt / pure-Python boundary note -->
+  <text class="qt" x="24" y="400">Everything except the scene shapes and the item is pure Python (no Qt).</text>
+  <text class="qt" x="24" y="418">SmartLineTool builds the obstacle model from the scene, drives the</text>
+  <text class="qt" x="24" y="436">router while you draw, and applies the operations to finished items.</text>
+</svg>
